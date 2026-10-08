@@ -47,6 +47,28 @@ function FitMapToPharmacies({ pharmacies }) {
   return null
 }
 
+const CollapsibleCard = ({ title, icon: Icon, iconColor, children, className = '', defaultOpen = true, extraHeader }) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  return (
+    <div className={`glass-card ${className}`} style={{ flex: isOpen && className.includes('alert-card') ? 1 : 'none' }}>
+      <h2 className="card-title" onClick={() => setIsOpen(!isOpen)} style={{ cursor: 'pointer', marginBottom: isOpen ? '1rem' : '0' }}>
+        <span className="alert-title-group" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {Icon && <Icon size={20} color={iconColor} />} {title}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {extraHeader}
+          <span style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s', fontSize: '0.8rem' }}>▼</span>
+        </div>
+      </h2>
+      {isOpen && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, minHeight: 0, overflow: className.includes('alert-card') ? 'hidden' : 'visible' }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
+
 function App() {
   const [dashboard, setDashboard] = useState(null)
   const [selectedCategory, setSelectedCategory] = useState('')
@@ -193,7 +215,7 @@ function App() {
             </div>
           )}
 
-          <div className="glass-card product-card">
+          <CollapsibleCard title="Filtros" className="product-card">
             <label className="product-filter" htmlFor="category-select">Categoría de producto</label>
             <select
               id="category-select"
@@ -206,10 +228,9 @@ function App() {
                 <option key={category} value={category}>{category}</option>
               ))}
             </select>
-          </div>
+          </CollapsibleCard>
 
-          <div className="glass-card">
-            <h2 className="card-title"><Zap size={20} color="var(--status-yellow)" /> Señales del periodo</h2>
+          <CollapsibleCard title="Señales del periodo" icon={Zap} iconColor="var(--status-yellow)">
             <div className="stats-grid">
               <div className="stat-box">
                 <span className="stat-label">Farmacias</span>
@@ -227,13 +248,15 @@ function App() {
             <span className="location-count">
               {formatNumber(dashboard?.stats?.recentUnits || 0)} unidades registradas en el periodo reciente
             </span>
-          </div>
+          </CollapsibleCard>
 
-          <div className="glass-card alert-card">
-            <h2 className="card-title">
-              <span className="alert-title-group"><AlertTriangle size={20} color="var(--status-red)" /> Aumentos por sector</span>
-              <span className="alert-count">{alerts.length} señales</span>
-            </h2>
+          <CollapsibleCard 
+            title="Aumentos por sector" 
+            icon={AlertTriangle} 
+            iconColor="var(--status-red)" 
+            className="alert-card"
+            extraHeader={<span className="alert-count" style={{ fontSize: '0.8rem', background: '#f1f5f9', padding: '2px 8px', borderRadius: '12px' }}>{alerts.length} señales</span>}
+          >
             <div className="alert-list">
               {loading ? (
                 <div className="empty-alert">Calculando señales…</div>
@@ -272,7 +295,26 @@ function App() {
                 })
               )}
             </div>
-          </div>
+          </CollapsibleCard>
+
+          <CollapsibleCard title="Predicción Epidemiológica" icon={Activity} iconColor="var(--status-red)" defaultOpen={false}>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-main)' }}>
+              <strong>Basado en patrones de compra:</strong>
+              <ul style={{ paddingLeft: '1rem', marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <li>
+                  <strong>Zona Norte:</strong> Aumento de Antihistamínicos.
+                  <div style={{ color: 'var(--status-yellow)' }}>Posible brote de alergias estacionales.</div>
+                </li>
+                <li>
+                  <strong>Sector Centro:</strong> Alta demanda de Analgésicos/Antipiréticos.
+                  <div style={{ color: 'var(--status-red)' }}>Posible foco de infecciones virales (ej. Dengue o Gripe).</div>
+                </li>
+              </ul>
+            </div>
+            <div style={{ fontSize: '0.75rem', background: '#fef2f2', border: '1px solid #fecaca', padding: '0.5rem', borderRadius: '4px', color: '#991b1b', marginTop: '0.5rem' }}>
+              <strong>Atención:</strong> Esta es una proyección teórica (MOCK para demo) basada en ventas y no constituye un diagnóstico epidemiológico real.
+            </div>
+          </CollapsibleCard>
 
           <button
             className={`action-button ${loading ? 'disabled' : ''}`}
