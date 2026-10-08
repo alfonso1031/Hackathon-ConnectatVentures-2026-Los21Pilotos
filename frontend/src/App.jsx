@@ -446,7 +446,7 @@ function App() {
 
       <header className="header">
         <div className="brand">
-          <Activity className="brand-icon" size={28} />
+          <img src="/logo.png" alt="FarmaSeñal Logo" className="brand-icon" style={{ height: '28px', width: 'auto' }} />
           FarmaSeñal Corporativo
         </div>
         <div className="header-caption">
