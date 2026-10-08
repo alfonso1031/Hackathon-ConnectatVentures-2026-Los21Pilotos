@@ -233,7 +233,7 @@ function App() {
             </div>
           </div>
 
-          <div className="glass-card" style={{ flex: 1, overflow: 'hidden' }}>
+          <div className="glass-card" style={{ flex: 1 }}>
             <h2 className="card-title">
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <AlertTriangle size={20} color="var(--status-red)" />
