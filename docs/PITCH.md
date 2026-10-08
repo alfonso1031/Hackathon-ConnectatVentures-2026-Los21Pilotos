@@ -84,17 +84,16 @@
 
 ---
 
-## 📊 3. Estructura Sugerida de Diapositivas (Pitch Deck de 6–7 Slides)
+## 📊 3. Estructura de Diapositivas (Pitch Deck de 6 Slides - Rápido y Visual)
 
-| # | Título de la Diapositiva | Contenido Clave | Apoyo Visual |
+| # | Título | Mensaje y Contenido Visual | Apoyo Gráfico Incrustado |
 |---|---|---|---|
-| **1** | **FarmaSeñal** | Subtítulo: *Inteligencia geoespacial para anticipar la demanda y evitar quiebres de stock*. Nombres del equipo: Los 21 Pilotos. | Logotipos de Farmaenlace, BYD y FarmaSeñal. |
-| **2** | **El Dolor: Quiebre de Stock** | - 50%+ de compradores compran una sola vez.<br>- El quiebre en percha ahuyenta al paciente crónico.<br>- Venta perdida inmediata + pérdida de LTV. | Foto/ilustración de paciente adulto mayor frente a percha vacía con cifra destacada. |
-| **3** | **La Causa: Abastecimiento a Ciegas** | - Reposición reactiva (pedir cuando ya no hay).<br>- Tiempos logísticos de 24–48h.<br>- Aislamiento entre sucursales del mismo sector. | Diagrama lineal de quiebre vs. gráfico de red de sucursales aisladas. |
-| **4** | **Nuestra Solución: FarmaSeñal** | - Detección estadística de anomalías de consumo.<br>- Mapa interactivo en tiempo real con semáforo por sector.<br>- Filtro por categorías críticas (Cardio, Analgésicos, Respiratorios). | **Captura de pantalla en alta resolución del dashboard y mapa**. |
-| **5** | **Arquitectura y Calidad Técnica** | - Frontend: React, Vite, Leaflet, CARTO Basemaps.<br>- Backend: API Python, validación de datasets, cálculo móvil 30 vs 90 días.<br>- Nube: Preparado para AWS Lambda + API Gateway v2. | Diagrama de flujo de datos (CSVs / SAP -> API Python -> React Dashboard). |
-| **6** | **Impacto & Sinergia BYD** | - Ecuación de impacto: Reducción de ventas perdidas + Mermas por caducidad.<br>- Logística ágil y verde: Traslados de proximidad con soporte de movilidad eléctrica BYD. | Gráfico comparativo (Base vs. Geo-AI) e ícono de electromovilidad. |
-| **7** | **Ruta a Producción (Roadmap)** | - Fase 1: Prototipo funcional validado (completado hoy).<br>- Fase 2: Piloto en 1 sector (ej. Norte de Quito) con datos de Vendix/SAP.<br>- Fase 3: Integración de rutas viales y órdenes automatizadas. | Línea de tiempo sencilla de 3 fases hacia el despliegue. |
+| **1** | **FarmaSeñal** | Portada corporativa: Inteligencia Geoespacial para la Cadena de Salud y Abastecimiento. Reto Farmaenlace & BYD — Equipo Los 21 Pilotos. | Estilo corporativo azul marino / cian tecnológico. |
+| **2** | **Imaginemos a Don José...** | Conexión humana con un ser querido (padre o abuelo) que busca su medicina crónica (Losartan/Paracetamol). Percha vacía ("vuelva la próxima semana"). 98% compra presencial. >50% fuga de clientes únicos. | **Ilustración 3D de Don José caminando a la farmacia** (`docs/assets/don_jose.jpg`). |
+| **3** | **Las Fallas del Abastecimiento** | 3 causas en bloques concisos: 1) Modelo Reactivo (tarde). 2) Bache logístico de 24-48h con percha vacía. 3) Aislamiento entre farmacias del mismo sector a 10 min de distancia. | 3 tarjetas visuales comparativas con métricas destacadas. |
+| **4** | **Solución: FarmaSeñal en Vivo** | Explicación express del motor predictivo (30 vs 90 días, semáforos amarillo/rojo, categorías críticas) y **PASE DIRECTO A LA DEMO DEL DASHBOARD REACT**. | Tarjeta de llamado a demo en vivo + Dashboard Leaflet interactivo. |
+| **5** | **Diferenciación & Sinergia BYD** | Valor operativo en tiempo real vs. reporte forense de BI. Traslados de proximidad con flotas eléctricas BYD (+150 electrolineras). Ahorro operativo y cero emisiones. | **Ilustración 3D de logística eléctrica BYD en farmacia** (`docs/assets/logistica_byd.jpg`). |
+| **6** | **Cierre** | *"Que ningún ser querido se quede sin su medicina, y que ninguna farmacia pierda una venta."* Pasamos a la sesión de preguntas. | Cierre limpio con mensaje memorable y logos del reto. |
 
 ---
 
