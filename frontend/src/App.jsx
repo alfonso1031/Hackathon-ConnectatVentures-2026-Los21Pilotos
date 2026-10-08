@@ -900,9 +900,6 @@ function App() {
           >
             {hasInventoryData ? (
               <>
-                <p className="inventory-method">
-                  El porcentaje es la proporción de registros en estado agotado, crítico o bajo sobre el total de productos registrados en ese sector. Para verlo en el mapa, elige «Riesgo de inventario» en Filtros y pulsa «Aplicar filtros y actualizar». Mide existencias, no ventas ni enfermedades.
-                </p>
                 <div className="stats-grid inventory-stats-grid">
                   <div className="stat-box">
                     <span className="stat-label">Agotados</span>
