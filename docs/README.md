@@ -4,6 +4,10 @@ Estos documentos reúnen las reglas, criterios y referencias que encontramos en 
 
 ## Documentos
 
+- [Problema](PROBLEMA.md): quiebre de stock como hipótesis de dolor para clientes y operación.
+- [Causa](CAUSA.md): hipótesis de reposición reactiva y datos por validar.
+- [Solución](SOLUCION.md): flujo propuesto de reabastecimiento predictivo geoespacial.
+- [Impacto](IMPACTO.md): métricas de simulación y evidencia alineada con la rúbrica.
 - [Rúbrica](RUBRICA.md): criterios, pesos y cálculo de puntaje.
 - [Reglas para participantes](REGLAS_PARTICIPANTES.md): formato, integridad, convivencia y uso del trabajo.
 - [Acuerdo de participación](ACUERDO_PARTICIPACION.md): confidencialidad, propiedad intelectual, datos e imagen; incluye una discrepancia que requiere aclaración.
