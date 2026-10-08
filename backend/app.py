@@ -305,6 +305,9 @@ def _dashboard(
     metrics: dict[tuple[str, str], dict[str, float]] = defaultdict(
         lambda: {"recentUnits": 0.0, "baselineUnits": 0.0, "recentTransactions": 0, "baselineTransactions": 0}
     )
+    pharmacy_category_metrics: dict[tuple[str, str, str], dict[str, float]] = defaultdict(
+        lambda: {"recentUnits": 0.0, "baselineUnits": 0.0}
+    )
     branch_recent: dict[str, float] = defaultdict(float)
     product_recent: dict[tuple[str, str, str], float] = defaultdict(float)
     sector_totals: dict[str, dict[str, float]] = defaultdict(
@@ -322,12 +325,16 @@ def _dashboard(
         if recent_start <= sale["date"] <= as_of:
             values["recentUnits"] += quantity
             values["recentTransactions"] += 1
+            pharmacy_key = (pharmacy["sectorId"], category, sale["pharmacyId"])
+            pharmacy_category_metrics[pharmacy_key]["recentUnits"] += quantity
             branch_recent[sale["pharmacyId"]] += quantity
             product_recent[(pharmacy["sectorId"], category, sale["productId"])] += quantity
             sector_totals[pharmacy["sectorId"]]["recentUnits"] += quantity
         elif baseline_start <= sale["date"] <= baseline_end:
             values["baselineUnits"] += quantity
             values["baselineTransactions"] += 1
+            pharmacy_key = (pharmacy["sectorId"], category, sale["pharmacyId"])
+            pharmacy_category_metrics[pharmacy_key]["baselineUnits"] += quantity
             sector_totals[pharmacy["sectorId"]]["baselineUnits"] += quantity
 
     alerts: list[dict[str, Any]] = []
@@ -356,6 +363,35 @@ def _dashboard(
             if candidate_sector == sector_id and candidate_category == category
         ]
         top_products.sort(key=lambda product: (-product["units"], product["name"].casefold()))
+        lead_candidates = []
+        for (candidate_sector, candidate_category, pharmacy_id), pharmacy_values in pharmacy_category_metrics.items():
+            if candidate_sector != sector_id or candidate_category != category or pharmacy_values["recentUnits"] <= 0:
+                continue
+            pharmacy = pharmacies[pharmacy_id]
+            expected_units = pharmacy_values["baselineUnits"] * RECENT_DAYS / BASELINE_DAYS
+            excess_units = pharmacy_values["recentUnits"] - expected_units
+            lead_candidates.append((
+                excess_units,
+                pharmacy_values["recentUnits"],
+                pharmacy,
+                pharmacy_values,
+                expected_units,
+            ))
+        lead_candidates.sort(key=lambda candidate: (-candidate[0], -candidate[1], candidate[2]["name"].casefold()))
+        lead_pharmacy = None
+        if lead_candidates:
+            excess_units, _, pharmacy, pharmacy_values, expected_units = lead_candidates[0]
+            lead_pharmacy = {
+                "id": pharmacy["id"],
+                "name": pharmacy["name"],
+                "sectorId": pharmacy["sectorId"],
+                "lat": pharmacy["lat"],
+                "lng": pharmacy["lng"],
+                "recentUnits": round(pharmacy_values["recentUnits"], 2),
+                "baselineUnits": round(pharmacy_values["baselineUnits"], 2),
+                "expectedUnits": round(expected_units, 2),
+                "excessUnits": round(excess_units, 2),
+            }
         alerts.append({
             "id": f"{sector_id}:{category}",
             "sectorId": sector_id,
@@ -370,6 +406,7 @@ def _dashboard(
             "expectedDailyUnits": round(expected_daily, 3),
             "changePercent": round(change_percent, 1),
             "topProducts": top_products[:3],
+            "leadPharmacy": lead_pharmacy,
         })
     alerts.sort(key=lambda alert: (-alert["changePercent"], -alert["recentUnits"], alert["sector"], alert["category"]))
 
@@ -460,6 +497,11 @@ def _dashboard(
             },
         })
     pharmacy_rows.sort(key=lambda pharmacy: pharmacy["name"].casefold())
+    pharmacies_by_id = {pharmacy["id"]: pharmacy for pharmacy in pharmacy_rows}
+    for alert in alerts:
+        lead_pharmacy = alert["leadPharmacy"]
+        if lead_pharmacy:
+            lead_pharmacy["inventorySummary"] = pharmacies_by_id[lead_pharmacy["id"]]["inventorySummary"]
 
     sector_metric_rows = []
     for sector_id, values in sector_totals.items():

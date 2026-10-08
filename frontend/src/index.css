@@ -116,7 +116,7 @@ body {
 .alert-list {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.45rem;
 }
 
 .alert-item {
@@ -124,19 +124,37 @@ body {
   border: 1px solid var(--panel-border);
   border-left: 4px solid var(--status-green);
   border-radius: 8px;
-  padding: 1rem;
+  padding: 0.62rem 0.72rem;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   animation: slideIn 0.3s ease-out forwards;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.22rem;
+}
+
+.alert-item-button {
+  width: 100%;
+  color: var(--text-main);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.alert-item-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.alert-item-button:disabled {
+  cursor: default;
+  opacity: 0.75;
 }
 
 .alert-item.out { border-left-color: var(--status-out); }
 .alert-item.red { border-left-color: var(--status-red); }
 .alert-item.yellow { border-left-color: var(--status-yellow); }
 
-.alert-item:hover {
+.alert-item:hover:not(:disabled) {
   transform: translateX(2px);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
 }
@@ -144,18 +162,18 @@ body {
 .alert-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
 }
 
 .alert-title {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.84rem;
   color: var(--text-main);
 }
 
 .alert-badge {
-  font-size: 0.7rem;
-  padding: 0.2rem 0.5rem;
+  font-size: 0.6rem;
+  padding: 0.12rem 0.38rem;
   border-radius: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -175,12 +193,14 @@ body {
 
 .alert-metric {
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .metric-value {
   font-weight: 700;
-  font-size: 1rem;
+  font-size: 0.86rem;
 }
 
 .metric-value.out { color: var(--status-out); }
@@ -506,21 +526,22 @@ body {
 
 .alert-category {
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.72rem;
 }
 
-.signal-details {
+.alert-location {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 0.25rem 0.75rem;
+  align-items: center;
+  gap: 0.28rem;
+  overflow: hidden;
   color: var(--text-muted);
-  font-size: 0.76rem;
+  font-size: 0.7rem;
 }
 
-.top-product {
-  color: var(--text-muted);
-  font-size: 0.76rem;
+.alert-location span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .data-message {
@@ -580,6 +601,23 @@ body {
   margin: 0 0 0.55rem;
   color: var(--accent);
   font-size: 1rem;
+}
+
+.pharmacy-popup h3 {
+  margin-bottom: 0.32rem;
+  font-size: 0.9rem;
+}
+
+.pharmacy-popup .popup-subtitle {
+  margin: 0 0 0.42rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.pharmacy-popup p:not(.popup-subtitle) {
+  margin: 0.24rem 0;
+  font-size: 0.76rem;
+  line-height: 1.35;
 }
 
 .map-popup-empty h3 {

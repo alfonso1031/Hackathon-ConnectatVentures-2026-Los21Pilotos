@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { MapContainer, Pane, TileLayer, useMap } from 'react-leaflet'
-import { Activity, AlertCircle, AlertTriangle, Bell, PackageCheck, RefreshCw } from 'lucide-react'
+import { Activity, AlertCircle, AlertTriangle, Bell, MapPin, PackageCheck, RefreshCw } from 'lucide-react'
 import L from 'leaflet'
 import './App.css'
 
@@ -355,13 +355,94 @@ function createMapPopup(cell) {
   return content
 }
 
-function HexHeatmapLayer({ pharmacies, alerts, sectorMetrics, metric, heatOpacity }) {
+function createPharmacyPopup(alert, pharmacy) {
+  const content = document.createElement('div')
+  content.className = 'map-popup pharmacy-popup'
+  const heading = document.createElement('h3')
+  heading.textContent = pharmacy.name || 'Farmacia'
+  content.append(heading)
+
+  const subtitle = document.createElement('p')
+  subtitle.className = 'popup-subtitle'
+  subtitle.textContent = `${alert.category} · ${alert.sector}`
+  content.append(subtitle)
+
+  const addLine = (label, value) => {
+    const paragraph = document.createElement('p')
+    const strong = document.createElement('strong')
+    strong.textContent = `${label}: `
+    paragraph.append(strong, document.createTextNode(String(value)))
+    content.append(paragraph)
+  }
+
+  addLine('Aumento del sector', `+${formatNumber(alert.changePercent, 1)}%`)
+  addLine('Ventas de esta farmacia (30 días)', `${formatNumber(pharmacy.recentUnits, 1)} uds.`)
+  addLine(
+    'Exceso estimado en esta farmacia',
+    `${pharmacy.excessUnits > 0 ? '+' : ''}${formatNumber(pharmacy.excessUnits, 1)} uds. sobre ${formatNumber(pharmacy.expectedUnits, 1)} esperadas`,
+  )
+
+  const inventorySummary = pharmacy.inventorySummary
+  if (inventorySummary?.recordCount) {
+    addLine('Inventario en riesgo', `${formatNumber(inventorySummary.riskCount)} de ${formatNumber(inventorySummary.recordCount)} productos`)
+    if (inventorySummary.averageCoverageDays !== null) {
+      addLine('Cobertura promedio', `${formatNumber(inventorySummary.averageCoverageDays, 1)} días`)
+    }
+  }
+  return content
+}
+
+function HexHeatmapLayer({ pharmacies, alerts, sectorMetrics, metric, heatOpacity, focusRequest }) {
   const map = useMap()
   const [grid, setGrid] = useState(() => buildHexCells(map, pharmacies, alerts, sectorMetrics))
   const drawRef = useRef(null)
   const gridRef = useRef(grid)
   const metricRef = useRef(metric)
   const opacityRef = useRef(heatOpacity)
+
+  useEffect(() => {
+    const alert = focusRequest?.alert
+    const pharmacy = alert?.leadPharmacy
+    if (!pharmacy || !Number.isFinite(pharmacy.lat) || !Number.isFinite(pharmacy.lng)) return undefined
+
+    const coordinates = [pharmacy.lat, pharmacy.lng]
+    const marker = L.circleMarker(coordinates, {
+      radius: 9,
+      color: '#c2410c',
+      weight: 3,
+      fillColor: '#fff7ed',
+      fillOpacity: 1,
+      pane: 'markerPane',
+      interactive: false,
+    }).addTo(map)
+    marker.bringToFront()
+
+    const popup = L.popup({
+      maxWidth: 290,
+      minWidth: 210,
+      autoPanPadding: [18, 18],
+      pane: 'popupPane',
+      className: 'heatmap-popup pharmacy-focus-popup',
+    })
+      .setLatLng(coordinates)
+      .setContent(createPharmacyPopup(alert, pharmacy))
+
+    const target = L.latLng(coordinates)
+    const targetZoom = Math.max(map.getZoom(), 15)
+    const openPopup = () => popup.openOn(map)
+    if (target.distanceTo(map.getCenter()) > 1 || map.getZoom() !== targetZoom) {
+      map.once('moveend', openPopup)
+      map.flyTo(coordinates, targetZoom, { duration: 0.7 })
+    } else {
+      openPopup()
+    }
+
+    return () => {
+      map.off('moveend', openPopup)
+      marker.remove()
+      if (map.hasLayer(popup)) map.closePopup(popup)
+    }
+  }, [map, focusRequest])
 
   useEffect(() => {
     gridRef.current = grid
@@ -614,6 +695,7 @@ function App() {
   const [reloadToken, setReloadToken] = useState(0)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [toasts, setToasts] = useState([])
+  const [mapFocusRequest, setMapFocusRequest] = useState(null)
   const previousAlerts = useRef(null)
 
   useEffect(() => {
@@ -763,6 +845,7 @@ function App() {
               sectorMetrics={sectorMetrics}
               metric={analysisFilters.metric}
               heatOpacity={heatOpacity}
+              focusRequest={mapFocusRequest}
             />
           </MapContainer>
           <div className="map-opacity-panel">
@@ -828,29 +911,37 @@ function App() {
               ) : (
                 alerts.map((alert) => {
                   const status = alert.status === 'red' ? 'red' : 'yellow'
-                  const leadingProduct = alert.topProducts?.[0]
+                  const leadPharmacy = alert.leadPharmacy
+                  const hasCoordinates = Number.isFinite(leadPharmacy?.lat) && Number.isFinite(leadPharmacy?.lng)
                   return (
-                    <article key={alert.id} className={`alert-item ${status}`}>
-                      <div className="alert-header">
+                    <button
+                      key={alert.id}
+                      type="button"
+                      className={`alert-item alert-item-button ${status}`}
+                      disabled={!hasCoordinates}
+                      aria-label={hasCoordinates
+                        ? `Ver ${leadPharmacy.name}, en ${alert.sector}, con aumento de ${formatNumber(alert.changePercent, 1)} por ciento en ${alert.category}`
+                        : `Farmacia sin ubicación para la señal de ${alert.sector}`}
+                      title="Ver esta farmacia en el mapa"
+                      onClick={() => setMapFocusRequest({ alert })}
+                    >
+                      <span className="alert-header">
                         <span className="alert-title">{alert.sector}</span>
                         <span className={`alert-badge badge-${status}`}>
                           {statusDetails[status].label}
                         </span>
-                      </div>
-                      <div className="alert-metric">
+                      </span>
+                      <span className="alert-metric">
                         <span className="alert-category">{alert.category}</span>
                         <span className={`metric-value ${status}`}>
-                          +{formatNumber(alert.changePercent)}% frente a la línea base
+                          +{formatNumber(alert.changePercent)}%
                         </span>
-                      </div>
-                      <div className="signal-details">
-                        <span>{formatNumber(alert.recentUnits)} uds. en 30 días</span>
-                        <span>Base: {formatNumber(alert.baselineUnits)} uds. en 90 días</span>
-                      </div>
-                      {leadingProduct && (
-                        <div className="top-product">Mayor aporte reciente: {leadingProduct.name}</div>
-                      )}
-                    </article>
+                      </span>
+                      <span className="alert-location">
+                        <MapPin size={13} aria-hidden="true" />
+                        <span>{leadPharmacy?.name || 'Ubicación no disponible'}</span>
+                      </span>
+                    </button>
                   )
                 })
               )}
@@ -958,7 +1049,7 @@ function App() {
                     <div><strong>{alert.sector}</strong><span>{alert.category}</span></div>
                     <strong>+{formatNumber(alert.changePercent, 1)}%</strong>
                     <small>{formatNumber(alert.recentUnits)} uds. en 30 días frente a {formatNumber(alert.baselineUnits)} en 90 días</small>
-                    <small className="epidemiological-possibility">Posible afección: no determinada con los datos disponibles.</small>
+                    <small className="epidemiological-possibility">Ejemplos para revisar (no inferidos de esta señal): influenza, COVID-19 y VRS.</small>
                   </article>
                 ))}
               </div>
