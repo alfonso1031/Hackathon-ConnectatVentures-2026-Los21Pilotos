@@ -8,6 +8,7 @@ Estos documentos reúnen las reglas, criterios y referencias que encontramos en 
 - [Causa](CAUSA.md): hipótesis de reposición reactiva y datos por validar.
 - [Solución](SOLUCION.md): flujo propuesto de reabastecimiento predictivo geoespacial.
 - [Casos de uso](CASOS_DE_USO.md): flujo principal de reabastecimiento y caso complementario de señales territoriales de salud para FarmaSeñal.
+- [Pitch y Presentación](PITCH.md): guion cronometrado de 3 minutos, diapositivas y respuestas para el jurado.
 - [Impacto](IMPACTO.md): métricas de simulación y evidencia alineada con la rúbrica.
 - [Rúbrica](RUBRICA.md): criterios, pesos y cálculo de puntaje.
 - [Reglas para participantes](REGLAS_PARTICIPANTES.md): formato, integridad, convivencia y uso del trabajo.
