@@ -8,7 +8,9 @@ const API = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 const CARTO_KEY = import.meta.env.VITE_CARTO_BASEMAPS_KEY?.trim()
 const CARTO_TILES = `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png${CARTO_KEY ? `?key=${encodeURIComponent(CARTO_KEY)}` : ''}`
 const DEFAULT_CENTER = [-0.18, -78.48]
-const HEX_RADIUS = 18
+const HEX_RADIUS_METERS = 350
+const MIN_HEX_RADIUS_PIXELS = 5.5
+const HEX_FIT_PADDING = 30
 const HEAT_INFLUENCE_RADIUS_METERS = 3_000
 const HEAT_SIGMA_METERS = 1_450
 const AUTO_REFRESH_MS = 30_000
@@ -66,6 +68,12 @@ function hexCenter(q, r, radius) {
   )
 }
 
+function getHexRadius(map, zoom) {
+  const latitude = map.getCenter().lat * Math.PI / 180
+  const metersPerPixel = 156543.03392804097 * Math.cos(latitude) / (2 ** zoom)
+  return Math.max(MIN_HEX_RADIUS_PIXELS, HEX_RADIUS_METERS / metersPerPixel)
+}
+
 function getHeatColor(score) {
   const upperIndex = HEAT_COLOR_STOPS.findIndex((stop) => score <= stop.score)
   if (upperIndex <= 0) return HEAT_COLOR_STOPS[0].color
@@ -94,7 +102,7 @@ function getHeatStyle(score) {
 
 function buildHexCells(map, pharmacies, alerts) {
   const zoom = map.getZoom()
-  const radius = HEX_RADIUS
+  const radius = getHexRadius(map, zoom)
   const viewport = map.getPixelBounds()
   const viewportCorners = [
     viewport.min,
@@ -240,8 +248,7 @@ function FitMapToPharmacies({ pharmacies }) {
 
     if (coordinates.length === 1) map.setView(coordinates[0], 13)
     if (coordinates.length > 1) {
-      const padding = HEX_RADIUS + 12
-      map.fitBounds(L.latLngBounds(coordinates), { padding: [padding, padding], maxZoom: 13 })
+      map.fitBounds(L.latLngBounds(coordinates), { padding: [HEX_FIT_PADDING, HEX_FIT_PADDING], maxZoom: 13 })
     }
   }, [coordinateKey, map, pharmacies])
 
