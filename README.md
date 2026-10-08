@@ -1,6 +1,11 @@
 # Hackathon-ConnectatVentures-2026-Los21Pilotos
 Repositorio para la solucion creada en la Hackathon ConnectatVentures 2026
 
+## Enlaces
+
+- **Repositorio:** [GitHub - Los 21 Pilotos](https://github.com/alfonso1031/Hackathon-ConnectatVentures-2026-Los21Pilotos)
+- **Demo en vivo (Vercel):** [farmasenal-los21pilotos.vercel.app](https://farmasenal-los21pilotos.vercel.app)
+
 ## Infraestructura de FarmaSeñal y por qué se usó
 
 La demo documentada usa una arquitectura serverless en AWS para publicar el flujo con pocos servicios y sin administrar servidores:
