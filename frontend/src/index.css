@@ -524,10 +524,6 @@ body {
   font-size: 0.85rem;
 }
 
-.heat-hex {
-  transition: fill 450ms ease, fill-opacity 450ms ease, stroke 450ms ease;
-}
-
 .hex-alert-list {
   margin: 0.45rem 0 0;
   padding-left: 1.1rem;
@@ -612,8 +608,30 @@ body {
 }
 
 .legend-swatch.no-signal { background: #64748b; }
-.legend-swatch.observed { background: #f59e0b; }
-.legend-swatch.high { background: #ef4444; }
+
+.heat-scale {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.heat-gradient {
+  display: block;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #60a5fa, #22d3ee, #22c55e, #a3e635, #facc15, #fb923c, #ef4444, #991b1b);
+}
+
+.heat-scale-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+}
+
+.heat-scale-labels span {
+  display: initial;
+}
 
 @keyframes refreshPulse {
   50% { opacity: 0.45; transform: scale(0.82); }

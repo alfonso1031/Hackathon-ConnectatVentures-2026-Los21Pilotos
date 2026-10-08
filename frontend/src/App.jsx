@@ -9,8 +9,20 @@ const CARTO_KEY = import.meta.env.VITE_CARTO_BASEMAPS_KEY?.trim()
 const CARTO_TILES = `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png${CARTO_KEY ? `?key=${encodeURIComponent(CARTO_KEY)}` : ''}`
 const DEFAULT_CENTER = [-0.18, -78.48]
 const HEX_RADIUS = 18
+const HEAT_INFLUENCE_RADIUS_METERS = 3_000
+const HEAT_SIGMA_METERS = 1_450
 const AUTO_REFRESH_MS = 30_000
 const EMPTY_ARRAY = []
+const HEAT_COLOR_STOPS = [
+  { score: 0.025, color: '#60a5fa' },
+  { score: 0.16, color: '#22d3ee' },
+  { score: 0.3, color: '#22c55e' },
+  { score: 0.44, color: '#a3e635' },
+  { score: 0.58, color: '#facc15' },
+  { score: 0.72, color: '#fb923c' },
+  { score: 0.86, color: '#ef4444' },
+  { score: 1, color: '#991b1b' },
+]
 
 const statusDetails = {
   red: { label: 'Alza alta', color: 'var(--status-red)', icon: AlertTriangle },
@@ -54,12 +66,30 @@ function hexCenter(q, r, radius) {
   )
 }
 
+function getHeatColor(score) {
+  const upperIndex = HEAT_COLOR_STOPS.findIndex((stop) => score <= stop.score)
+  if (upperIndex <= 0) return HEAT_COLOR_STOPS[0].color
+
+  const lower = HEAT_COLOR_STOPS[upperIndex - 1]
+  const upper = HEAT_COLOR_STOPS[upperIndex]
+  const ratio = (score - lower.score) / (upper.score - lower.score)
+  const from = lower.color.match(/[\da-f]{2}/gi).map((channel) => Number.parseInt(channel, 16))
+  const to = upper.color.match(/[\da-f]{2}/gi).map((channel) => Number.parseInt(channel, 16))
+  const interpolated = from.map((channel, index) => Math.round(channel + (to[index] - channel) * ratio))
+
+  return `#${interpolated.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
+}
+
 function getHeatStyle(score) {
   if (score < 0.025) {
     return { color: '#94a3b8', fillOpacity: 0.055, opacity: 0.28 }
   }
-  const color = score >= 0.78 ? '#ef4444' : '#f59e0b'
-  return { color, fillOpacity: 0.08 + score * 0.48, opacity: 0.35 + score * 0.5 }
+  const normalizedScore = (score - 0.025) / 0.975
+  return {
+    color: getHeatColor(score),
+    fillOpacity: 0.12 + normalizedScore * 0.46,
+    opacity: 0.4 + normalizedScore * 0.48,
+  }
 }
 
 function buildHexCells(map, pharmacies, alerts) {
@@ -121,10 +151,11 @@ function buildHexCells(map, pharmacies, alerts) {
       cell.recentUnits += Number.isFinite(pharmacy.recentUnits) ? pharmacy.recentUnits : 0
       cell.sectors.add(pharmacy.sectorId)
     }
+    const location = L.latLng(pharmacy.lat, pharmacy.lng)
     if (pharmacy.status === 'red') {
-      activeSources.push({ pharmacy, point, strength: 1 })
+      activeSources.push({ pharmacy, location, strength: 1 })
     } else if (pharmacy.status === 'yellow') {
-      activeSources.push({ pharmacy, point, strength: 0.62 })
+      activeSources.push({ pharmacy, location, strength: 0.62 })
     }
   })
 
@@ -135,12 +166,11 @@ function buildHexCells(map, pharmacies, alerts) {
     alertsBySector.set(alert.sector, sectorAlerts)
   })
 
-  const influenceRadius = radius * 4.5
-  const sigma = radius * 2.3
-  const maxDistanceSquared = influenceRadius ** 2
-  const sigmaFactor = 2 * sigma ** 2
+  const maxDistanceSquared = HEAT_INFLUENCE_RADIUS_METERS ** 2
+  const sigmaFactor = 2 * HEAT_SIGMA_METERS ** 2
 
   return [...bins.values()].map((cell) => {
+    const cellLocation = map.unproject(cell.center, zoom)
     const positions = Array.from({ length: 6 }, (_, index) => {
       const angle = (Math.PI / 180) * (60 * index - 30)
       const x = cell.center.x + radius * Math.cos(angle)
@@ -153,9 +183,8 @@ function buildHexCells(map, pharmacies, alerts) {
     const nearbySectorIntensity = new Map()
 
     activeSources.forEach((source) => {
-      const dx = source.point.x - cell.center.x
-      const dy = source.point.y - cell.center.y
-      const distanceSquared = dx * dx + dy * dy
+      const distance = map.distance(cellLocation, source.location)
+      const distanceSquared = distance * distance
       if (distanceSquared > maxDistanceSquared) return
 
       const contribution = source.strength * Math.exp(-distanceSquared / sigmaFactor)
@@ -246,14 +275,25 @@ function HexHeatmapLayer({ pharmacies, alerts }) {
   const [, setViewportVersion] = useState(0)
 
   useEffect(() => {
-    const updateHexSize = () => setViewportVersion((version) => version + 1)
-    map.on('moveend', updateHexSize)
-    map.on('zoomend', updateHexSize)
-    map.on('resize', updateHexSize)
+    let frameId = 0
+    const refreshHexGrid = () => {
+      if (frameId) window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0
+        setViewportVersion((version) => version + 1)
+      })
+    }
+
+    map.on('zoom', refreshHexGrid)
+    map.on('zoomend', refreshHexGrid)
+    map.on('moveend', refreshHexGrid)
+    map.on('resize', refreshHexGrid)
     return () => {
-      map.off('moveend', updateHexSize)
-      map.off('zoomend', updateHexSize)
-      map.off('resize', updateHexSize)
+      if (frameId) window.cancelAnimationFrame(frameId)
+      map.off('zoom', refreshHexGrid)
+      map.off('zoomend', refreshHexGrid)
+      map.off('moveend', refreshHexGrid)
+      map.off('resize', refreshHexGrid)
     }
   }, [map])
 
@@ -413,6 +453,7 @@ function App() {
           <MapContainer
             center={mapCenter}
             zoom={11}
+            zoomAnimation={false}
             scrollWheelZoom
             style={{ height: '100%', width: '100%' }}
           >
@@ -432,9 +473,11 @@ function App() {
           </div>
           <div className="hex-legend" aria-label="Leyenda de intensidad de señales">
             <strong>Intensidad por cercanía</strong>
-            <span><i className="legend-swatch no-signal" />Sin señal</span>
-            <span><i className="legend-swatch observed" />Alza observada</span>
-            <span><i className="legend-swatch high" />Alza alta</span>
+            <span><i className="legend-swatch no-signal" />Sin señal cercana</span>
+            <div className="heat-scale" aria-label="De menor a mayor intensidad">
+              <i className="heat-gradient" />
+              <div className="heat-scale-labels"><span>Menor</span><span>Mayor</span></div>
+            </div>
             <small>El color se atenúa con la distancia</small>
             <small>Se actualiza cada 30 s</small>
           </div>
