@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet'
-import { Activity, AlertCircle, AlertTriangle, Bell, PackageCheck, RefreshCw, TrendingUp, Zap } from 'lucide-react'
+import { MapContainer, Polygon, Popup, TileLayer, useMap } from 'react-leaflet'
+import { Activity, AlertCircle, AlertTriangle, Bell, PackageCheck, RefreshCw, Zap } from 'lucide-react'
 import L from 'leaflet'
 import './App.css'
 
@@ -8,6 +8,9 @@ const API = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 const CARTO_KEY = import.meta.env.VITE_CARTO_BASEMAPS_KEY?.trim()
 const CARTO_TILES = `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png${CARTO_KEY ? `?key=${encodeURIComponent(CARTO_KEY)}` : ''}`
 const DEFAULT_CENTER = [-0.18, -78.48]
+const HEX_RADIUS = 18
+const AUTO_REFRESH_MS = 30_000
+const EMPTY_ARRAY = []
 
 const statusDetails = {
   red: { label: 'Alza alta', color: 'var(--status-red)', icon: AlertTriangle },
@@ -20,29 +23,198 @@ const formatNumber = (value, maximumFractionDigits = 0) => {
   return new Intl.NumberFormat('es-EC', { maximumFractionDigits }).format(value)
 }
 
-const createIcon = (status) => {
-  const markerStatus = status in statusDetails ? status : 'green'
-  return L.divIcon({
-    className: 'custom-marker',
-    html: `<div class="marker-pulse marker-${markerStatus}"></div>`,
-    iconSize: [20, 20],
-    iconAnchor: [10, 10],
+function roundAxial(q, r) {
+  const x = q
+  const z = r
+  const y = -x - z
+  let roundedX = Math.round(x)
+  let roundedY = Math.round(y)
+  let roundedZ = Math.round(z)
+  const xDiff = Math.abs(roundedX - x)
+  const yDiff = Math.abs(roundedY - y)
+  const zDiff = Math.abs(roundedZ - z)
+
+  if (xDiff > yDiff && xDiff > zDiff) roundedX = -roundedY - roundedZ
+  else if (yDiff > zDiff) roundedY = -roundedX - roundedZ
+  else roundedZ = -roundedX - roundedY
+
+  return { q: roundedX, r: roundedZ }
+}
+
+function hexForPoint(x, y, radius) {
+  const q = (Math.sqrt(3) / 3 * x - y / 3) / radius
+  const r = (2 / 3 * y) / radius
+  return roundAxial(q, r)
+}
+
+function hexCenter(q, r, radius) {
+  return L.point(
+    radius * Math.sqrt(3) * (q + r / 2),
+    radius * 1.5 * r,
+  )
+}
+
+function getHeatStyle(score) {
+  if (score < 0.025) {
+    return { color: '#94a3b8', fillOpacity: 0.055, opacity: 0.28 }
+  }
+  const color = score >= 0.78 ? '#ef4444' : '#f59e0b'
+  return { color, fillOpacity: 0.08 + score * 0.48, opacity: 0.35 + score * 0.5 }
+}
+
+function buildHexCells(map, pharmacies, alerts) {
+  const zoom = map.getZoom()
+  const radius = HEX_RADIUS
+  const viewport = map.getPixelBounds()
+  const viewportCorners = [
+    viewport.min,
+    L.point(viewport.max.x, viewport.min.y),
+    viewport.max,
+    L.point(viewport.min.x, viewport.max.y),
+  ]
+  const cornerHexes = viewportCorners.map((point) => {
+    const q = (Math.sqrt(3) / 3 * point.x - point.y / 3) / radius
+    const r = (2 / 3 * point.y) / radius
+    return { q, r }
+  })
+  const minQ = Math.floor(Math.min(...cornerHexes.map((hex) => hex.q))) - 2
+  const maxQ = Math.ceil(Math.max(...cornerHexes.map((hex) => hex.q))) + 2
+  const minR = Math.floor(Math.min(...cornerHexes.map((hex) => hex.r))) - 2
+  const maxR = Math.ceil(Math.max(...cornerHexes.map((hex) => hex.r))) + 2
+  const halfWidth = radius * Math.sqrt(3) / 2
+  const bins = new Map()
+
+  for (let q = minQ; q <= maxQ; q += 1) {
+    for (let r = minR; r <= maxR; r += 1) {
+      const center = hexCenter(q, r, radius)
+      if (
+        center.x + halfWidth < viewport.min.x
+        || center.x - halfWidth > viewport.max.x
+        || center.y + radius < viewport.min.y
+        || center.y - radius > viewport.max.y
+      ) continue
+
+      const key = `${q}:${r}`
+      bins.set(key, {
+        id: key,
+        q,
+        r,
+        center,
+        pharmacyCount: 0,
+        recentUnits: 0,
+        sectors: new Set(),
+      })
+    }
+  }
+
+  const activeSources = []
+  pharmacies.forEach((pharmacy) => {
+    if (!Number.isFinite(pharmacy.lat) || !Number.isFinite(pharmacy.lng)) return
+
+    const point = map.project([pharmacy.lat, pharmacy.lng], zoom)
+    const cellIndex = hexForPoint(point.x, point.y, radius)
+    const key = `${cellIndex.q}:${cellIndex.r}`
+    const cell = bins.get(key)
+
+    if (cell) {
+      cell.pharmacyCount += 1
+      cell.recentUnits += Number.isFinite(pharmacy.recentUnits) ? pharmacy.recentUnits : 0
+      cell.sectors.add(pharmacy.sectorId)
+    }
+    if (pharmacy.status === 'red') {
+      activeSources.push({ pharmacy, point, strength: 1 })
+    } else if (pharmacy.status === 'yellow') {
+      activeSources.push({ pharmacy, point, strength: 0.62 })
+    }
+  })
+
+  const alertsBySector = new Map()
+  alerts.forEach((alert) => {
+    const sectorAlerts = alertsBySector.get(alert.sector) || []
+    sectorAlerts.push(alert)
+    alertsBySector.set(alert.sector, sectorAlerts)
+  })
+
+  const influenceRadius = radius * 4.5
+  const sigma = radius * 2.3
+  const maxDistanceSquared = influenceRadius ** 2
+  const sigmaFactor = 2 * sigma ** 2
+
+  return [...bins.values()].map((cell) => {
+    const positions = Array.from({ length: 6 }, (_, index) => {
+      const angle = (Math.PI / 180) * (60 * index - 30)
+      const x = cell.center.x + radius * Math.cos(angle)
+      const y = cell.center.y + radius * Math.sin(angle)
+      const coordinate = map.unproject(L.point(x, y), zoom)
+      return [coordinate.lat, coordinate.lng]
+    })
+    let remainingIntensity = 1
+    let nearbySignalCount = 0
+    const nearbySectorIntensity = new Map()
+
+    activeSources.forEach((source) => {
+      const dx = source.point.x - cell.center.x
+      const dy = source.point.y - cell.center.y
+      const distanceSquared = dx * dx + dy * dy
+      if (distanceSquared > maxDistanceSquared) return
+
+      const contribution = source.strength * Math.exp(-distanceSquared / sigmaFactor)
+      if (contribution < 0.025) return
+      remainingIntensity *= 1 - contribution
+      nearbySignalCount += 1
+      if (source.pharmacy.sectorId) {
+        nearbySectorIntensity.set(
+          source.pharmacy.sectorId,
+          Math.max(nearbySectorIntensity.get(source.pharmacy.sectorId) || 0, contribution),
+        )
+      }
+    })
+
+    const nearbySectors = [...nearbySectorIntensity.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([sector]) => sector)
+    const sectors = [...cell.sectors].filter(Boolean).sort((a, b) => a.localeCompare(b))
+    const cellAlerts = [...new Map(
+      nearbySectors
+        .flatMap((sector) => alertsBySector.get(sector) || [])
+        .map((alert) => [alert.id, alert]),
+    ).values()]
+    const score = 1 - remainingIntensity
+
+    return {
+      ...cell,
+      positions,
+      sectors,
+      nearbySectors,
+      nearbySignalCount,
+      alerts: cellAlerts,
+      score,
+      style: getHeatStyle(score),
+    }
   })
 }
 
 function FitMapToPharmacies({ pharmacies }) {
   const map = useMap()
+  const fittedCoordinates = useRef('')
+  const coordinateKey = pharmacies
+    .filter((pharmacy) => Number.isFinite(pharmacy.lat) && Number.isFinite(pharmacy.lng))
+    .map((pharmacy) => `${pharmacy.id}:${pharmacy.lat},${pharmacy.lng}`)
+    .join('|')
 
   useEffect(() => {
+    if (!coordinateKey || coordinateKey === fittedCoordinates.current) return
+    fittedCoordinates.current = coordinateKey
     const coordinates = pharmacies
       .filter((pharmacy) => Number.isFinite(pharmacy.lat) && Number.isFinite(pharmacy.lng))
       .map((pharmacy) => [pharmacy.lat, pharmacy.lng])
 
     if (coordinates.length === 1) map.setView(coordinates[0], 13)
     if (coordinates.length > 1) {
-      map.fitBounds(L.latLngBounds(coordinates), { padding: [32, 32], maxZoom: 13 })
+      const padding = HEX_RADIUS + 12
+      map.fitBounds(L.latLngBounds(coordinates), { padding: [padding, padding], maxZoom: 13 })
     }
-  }, [map, pharmacies])
+  }, [coordinateKey, map, pharmacies])
 
   return null
 }
@@ -69,12 +241,70 @@ const CollapsibleCard = ({ title, icon: Icon, iconColor, children, className = '
   );
 };
 
+function HexHeatmapLayer({ pharmacies, alerts }) {
+  const map = useMap()
+  const [, setViewportVersion] = useState(0)
+
+  useEffect(() => {
+    const updateHexSize = () => setViewportVersion((version) => version + 1)
+    map.on('moveend', updateHexSize)
+    map.on('zoomend', updateHexSize)
+    map.on('resize', updateHexSize)
+    return () => {
+      map.off('moveend', updateHexSize)
+      map.off('zoomend', updateHexSize)
+      map.off('resize', updateHexSize)
+    }
+  }, [map])
+
+  const cells = buildHexCells(map, pharmacies, alerts)
+
+  return cells.map((cell) => (
+    <Polygon
+      key={cell.id}
+      positions={cell.positions}
+      pathOptions={{
+        className: 'heat-hex',
+        color: cell.style.color,
+        fillColor: cell.style.color,
+        fillOpacity: cell.style.fillOpacity,
+        opacity: cell.style.opacity,
+        weight: 1,
+      }}
+    >
+      <Popup>
+        <div className="map-popup">
+          <h3>Área de influencia</h3>
+          <p><strong>Intensidad:</strong> {formatNumber(cell.score * 100)}%</p>
+          <p><strong>Sectores en la celda:</strong> {cell.sectors.join(', ') || 'Sin farmacia'}</p>
+          <p><strong>Farmacias en la celda:</strong> {formatNumber(cell.pharmacyCount)}</p>
+          <p><strong>Farmacias con señal cercana:</strong> {formatNumber(cell.nearbySignalCount)}</p>
+          <p><strong>Unidades recientes en la celda:</strong> {formatNumber(cell.recentUnits)}</p>
+          {cell.alerts.length > 0 ? (
+            <>
+              <p><strong>Sectores con señal próximos:</strong> {cell.nearbySectors.join(', ')}</p>
+              <ul className="hex-alert-list">
+                {cell.alerts.slice(0, 5).map((alert) => (
+                  <li key={alert.id}>
+                    {alert.sector} · {alert.category}: +{formatNumber(alert.changePercent)}% ({statusDetails[alert.status]?.label || 'Alza observada'})
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : <p>No hay señales de alza cercanas.</p>}
+        </div>
+      </Popup>
+    </Polygon>
+  ))
+}
+
 function App() {
   const [dashboard, setDashboard] = useState(null)
   const [selectedCategory, setSelectedCategory] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [reloadToken, setReloadToken] = useState(0)
+  const [lastUpdated, setLastUpdated] = useState(null)
   const [toasts, setToasts] = useState([])
   const previousAlerts = useRef(null)
 
@@ -95,10 +325,10 @@ function App() {
         }
         if (!active) return
         setDashboard(payload)
+        setLastUpdated(new Date())
         setError('')
       } catch (requestError) {
         if (!active) return
-        setDashboard(null)
         setError(requestError.message || 'No se pudo conectar con el backend.')
       } finally {
         if (active) setLoading(false)
@@ -108,6 +338,15 @@ function App() {
     loadDashboard()
     return () => { active = false }
   }, [selectedCategory, reloadToken])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        setReloadToken((value) => value + 1)
+      }
+    }, AUTO_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     if (!dashboard) return
@@ -128,8 +367,8 @@ function App() {
     previousAlerts.current = currentAlerts
   }, [dashboard])
 
-  const pharmacies = dashboard?.pharmacies || []
-  const alerts = dashboard?.alerts || []
+  const pharmacies = dashboard?.pharmacies || EMPTY_ARRAY
+  const alerts = dashboard?.alerts || EMPTY_ARRAY
   const stats = dashboard?.stats || {
     totalPharmacies: 0,
     sectorsWithSignals: 0,
@@ -182,23 +421,23 @@ function App() {
               url={CARTO_TILES}
             />
             <FitMapToPharmacies pharmacies={pharmacies} />
-            {pharmacies.map((pharmacy) => (
-              <Marker
-                key={pharmacy.id}
-                position={[pharmacy.lat, pharmacy.lng]}
-                icon={createIcon(pharmacy.status)}
-              >
-                <Popup>
-                  <div className="map-popup">
-                    <h3>{pharmacy.name}</h3>
-                    <p><strong>Sector:</strong> {pharmacy.sectorId}</p>
-                    <p><strong>Señal:</strong> {statusDetails[pharmacy.status]?.label || 'Sin señal'}</p>
-                    <p><strong>Unidades vendidas, últimos 30 días:</strong> {formatNumber(pharmacy.recentUnits)}</p>
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
+            <HexHeatmapLayer pharmacies={pharmacies} alerts={alerts} />
           </MapContainer>
+          <div className={`map-refresh-status${error ? ' stale' : ''}`} aria-live="polite">
+            <span className={`refresh-indicator${loading ? ' loading' : ''}`} />
+            <span>
+              {error && dashboard ? 'Mostrando datos anteriores' : error ? 'Datos no disponibles' : loading ? 'Actualizando mapa' : 'Mapa actualizado'}
+              {lastUpdated && ` · ${lastUpdated.toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit' })}`}
+            </span>
+          </div>
+          <div className="hex-legend" aria-label="Leyenda de intensidad de señales">
+            <strong>Intensidad por cercanía</strong>
+            <span><i className="legend-swatch no-signal" />Sin señal</span>
+            <span><i className="legend-swatch observed" />Alza observada</span>
+            <span><i className="legend-swatch high" />Alza alta</span>
+            <small>El color se atenúa con la distancia</small>
+            <small>Se actualiza cada 30 s</small>
+          </div>
           {!loading && !error && pharmacies.length === 0 && (
             <div className="map-empty-state">No hay farmacias en el dataset.</div>
           )}
@@ -258,7 +497,7 @@ function App() {
             extraHeader={<span className="alert-count" style={{ fontSize: '0.8rem', background: '#f1f5f9', padding: '2px 8px', borderRadius: '12px' }}>{alerts.length} señales</span>}
           >
             <div className="alert-list">
-              {loading ? (
+              {loading && !dashboard ? (
                 <div className="empty-alert">Calculando señales…</div>
               ) : alerts.length === 0 ? (
                 <div className="empty-alert healthy-state">
