@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import { AlertTriangle, Activity, PackageCheck, Zap, TrendingDown } from 'lucide-react';
+import { AlertTriangle, Activity, PackageCheck, Zap, AlertCircle, XCircle, TrendingDown, Bell } from 'lucide-react';
 import L from 'leaflet';
-import './App.css'; // Optional: if you have extra styles not in index.css
+import './App.css';
 
 const MOCK_DATA = [
   { id: 1, name: "FarmaSeñal Centro", lat: 19.4326, lng: -99.1332, med: "Losartan", stock: 150, dailySales: 10 },
@@ -17,15 +17,23 @@ const MOCK_DATA = [
   { id: 10, name: "FarmaSeñal Narvarte", lat: 19.3888, lng: -99.1534, med: "Losartan", stock: 15, dailySales: 10 },
 ];
 
-// Helper to determine status based on days left
 const getStatus = (stock, dailySales) => {
+  if (stock === 0) return 'out';
   const daysLeft = stock / dailySales;
   if (daysLeft > 5) return 'green';
   if (daysLeft > 1) return 'yellow';
   return 'red';
 };
 
-// Custom Marker Icons
+const getStatusDetails = (status) => {
+  switch(status) {
+    case 'out': return { label: 'Agotado', color: 'var(--status-out)', icon: XCircle };
+    case 'red': return { label: 'Quiebre Inminente', color: 'var(--status-red)', icon: AlertTriangle };
+    case 'yellow': return { label: 'En Riesgo', color: 'var(--status-yellow)', icon: AlertCircle };
+    default: return { label: 'Saludable', color: 'var(--status-green)', icon: PackageCheck };
+  }
+};
+
 const createIcon = (status) => {
   return L.divIcon({
     className: 'custom-marker',
@@ -38,36 +46,72 @@ const createIcon = (status) => {
 function App() {
   const [pharmacies, setPharmacies] = useState(MOCK_DATA);
   const [simulationActive, setSimulationActive] = useState(true);
+  const [toasts, setToasts] = useState([]);
+  const prevStatuses = useRef({});
 
-  // Real-time stock simulator
+  const addToast = (title, message, status) => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, title, message, status }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000); // Hide toast after 5s
+  };
+
   useEffect(() => {
     if (!simulationActive) return;
 
     const interval = setInterval(() => {
-      setPharmacies(current => 
-        current.map(pharma => {
-          // Randomly decrease stock for some pharmacies to simulate sales
+      setPharmacies(current => {
+        let newPharmacies = [...current];
+        let hasChanges = false;
+
+        newPharmacies = newPharmacies.map(pharma => {
           const shouldDecrease = Math.random() > 0.6;
           if (shouldDecrease && pharma.stock > 0) {
-            // Subtract slightly accelerated rate to show demo effect quickly
+            hasChanges = true;
             const decreaseAmount = Math.max(1, Math.floor(Math.random() * 3));
-            return { ...pharma, stock: Math.max(0, pharma.stock - decreaseAmount) };
+            const newStock = Math.max(0, pharma.stock - decreaseAmount);
+            return { ...pharma, stock: newStock };
           }
           return pharma;
-        })
-      );
-    }, 2000); // Check every 2 seconds
+        });
+
+        if (hasChanges) {
+          // Check for state transitions to trigger notifications
+          newPharmacies.forEach(pharma => {
+            const currentStatus = getStatus(pharma.stock, pharma.dailySales);
+            const prevStatus = prevStatuses.current[pharma.id];
+            
+            if (prevStatus && currentStatus !== prevStatus) {
+              if (currentStatus === 'out') {
+                addToast("¡Atención Crítica!", `Stock agotado de ${pharma.med} en ${pharma.name}.`, "out");
+              } else if (currentStatus === 'red' && prevStatus !== 'out') {
+                addToast("Quiebre Inminente", `${pharma.name} tiene menos de 1 día de ${pharma.med}.`, "red");
+              }
+            }
+            prevStatuses.current[pharma.id] = currentStatus;
+          });
+        }
+
+        return newPharmacies;
+      });
+    }, 2000);
 
     return () => clearInterval(interval);
   }, [simulationActive]);
 
-  // Handle Predictve Restock Approval
-  const handleRestock = () => {
+  // Initial populate of prevStatuses
+  useEffect(() => {
+    pharmacies.forEach(p => {
+      prevStatuses.current[p.id] = getStatus(p.stock, p.dailySales);
+    });
+  }, []);
+
+  const handleRestockAll = () => {
     setPharmacies(current => 
       current.map(pharma => {
-        const daysLeft = pharma.stock / pharma.dailySales;
-        // If stock is below 5 days, restock it to 10 days worth
-        if (daysLeft <= 5) {
+        const status = getStatus(pharma.stock, pharma.dailySales);
+        if (status !== 'green') {
           return { ...pharma, stock: pharma.dailySales * 10 };
         }
         return pharma;
@@ -75,114 +119,157 @@ function App() {
     );
   };
 
-  const criticalAlerts = useMemo(() => {
+  const handleRestockSingle = (id, e) => {
+    e.stopPropagation();
+    setPharmacies(current => 
+      current.map(p => p.id === id ? { ...p, stock: p.dailySales * 10 } : p)
+    );
+  };
+
+  const sortedAlerts = useMemo(() => {
     return pharmacies
       .filter(p => getStatus(p.stock, p.dailySales) !== 'green')
-      .sort((a, b) => (a.stock / a.dailySales) - (b.stock / b.dailySales));
+      .sort((a, b) => {
+        const aStatus = getStatus(a.stock, a.dailySales);
+        const bStatus = getStatus(b.stock, b.dailySales);
+        // Priority: Out > Red > Yellow
+        const priority = { 'out': 0, 'red': 1, 'yellow': 2 };
+        if (priority[aStatus] !== priority[bStatus]) {
+          return priority[aStatus] - priority[bStatus];
+        }
+        return (a.stock / a.dailySales) - (b.stock / b.dailySales);
+      });
   }, [pharmacies]);
 
-  const globalStats = useMemo(() => {
-    const totalLocations = pharmacies.length;
-    const criticalCount = criticalAlerts.filter(p => getStatus(p.stock, p.dailySales) === 'red').length;
-    const warningCount = criticalAlerts.filter(p => getStatus(p.stock, p.dailySales) === 'yellow').length;
-    return { totalLocations, criticalCount, warningCount };
-  }, [pharmacies, criticalAlerts]);
+  const stats = useMemo(() => {
+    return {
+      out: pharmacies.filter(p => getStatus(p.stock, p.dailySales) === 'out').length,
+      red: pharmacies.filter(p => getStatus(p.stock, p.dailySales) === 'red').length,
+      yellow: pharmacies.filter(p => getStatus(p.stock, p.dailySales) === 'yellow').length,
+    };
+  }, [pharmacies]);
 
   return (
     <div className="app-container">
-      {/* Header */}
+      {/* Notifications Toast Area */}
+      <div className="toast-container">
+        {toasts.map(toast => {
+          const Icon = getStatusDetails(toast.status).icon;
+          return (
+            <div key={toast.id} className={`toast toast-${toast.status}`}>
+              <Icon className="toast-icon" size={24} color={`var(--status-${toast.status})`} />
+              <div className="toast-content">
+                <div className="toast-title">{toast.title}</div>
+                <div className="toast-desc">{toast.message}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
       <header className="header">
         <div className="brand">
           <Activity className="brand-icon" size={28} />
-          FarmaSeñal
+          FarmaSeñal Corporativo
         </div>
-        <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          Plataforma de IA Predictiva para Quiebres de Stock
+        <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Bell size={16} />
+          Monitoreo Predictivo en Tiempo Real
         </div>
       </header>
 
-      {/* Main Content Area */}
       <main className="main-content">
-        
-        {/* Map Section */}
         <div className="map-container">
           <MapContainer 
             center={[19.3900, -99.1800]} 
             zoom={12} 
             scrollWheelZoom={true}
-            style={{ height: '100%', width: '100%', background: '#0f172a' }}
+            style={{ height: '100%', width: '100%' }}
           >
             <TileLayer
               attribution='&copy; <a href="https://carto.com/">CARTO</a>'
               url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
             />
-            {pharmacies.map((pharma) => (
-              <Marker 
-                key={pharma.id} 
-                position={[pharma.lat, pharma.lng]}
-                icon={createIcon(getStatus(pharma.stock, pharma.dailySales))}
-              >
-                <Popup>
-                  <div style={{ padding: '5px', minWidth: '150px' }}>
-                    <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem', color: 'var(--accent)' }}>{pharma.name}</h3>
-                    <p style={{ margin: '5px 0', fontSize: '0.9rem' }}><strong>Medicamento:</strong> {pharma.med}</p>
-                    <p style={{ margin: '5px 0', fontSize: '0.9rem' }}>
-                      <strong>Stock:</strong> <span style={{ color: getStatus(pharma.stock, pharma.dailySales) === 'red' ? '#ef4444' : '#111' }}>{pharma.stock} uds</span>
-                    </p>
-                    <p style={{ margin: '5px 0', fontSize: '0.9rem', color: '#666' }}>Ventas Diarias: {pharma.dailySales}/día</p>
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
+            {pharmacies.map((pharma) => {
+              const status = getStatus(pharma.stock, pharma.dailySales);
+              return (
+                <Marker 
+                  key={pharma.id} 
+                  position={[pharma.lat, pharma.lng]}
+                  icon={createIcon(status)}
+                >
+                  <Popup>
+                    <div style={{ padding: '5px', minWidth: '150px' }}>
+                      <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem', color: 'var(--accent)' }}>{pharma.name}</h3>
+                      <p style={{ margin: '5px 0', fontSize: '0.9rem' }}><strong>Medicamento:</strong> {pharma.med}</p>
+                      <p style={{ margin: '5px 0', fontSize: '0.9rem' }}>
+                        <strong>Stock:</strong> <span style={{ fontWeight: 'bold', color: `var(--status-${status})` }}>{pharma.stock} uds</span>
+                      </p>
+                      <p style={{ margin: '5px 0', fontSize: '0.9rem', color: '#666' }}>Ventas Diarias: {pharma.dailySales}/día</p>
+                    </div>
+                  </Popup>
+                </Marker>
+              );
+            })}
           </MapContainer>
         </div>
 
-        {/* Dashboard / Alertas */}
         <aside className="panel">
-          
-          {/* Stats Overview */}
           <div className="glass-card">
-            <h2 className="card-title"><Zap size={20} color="var(--status-yellow)" /> Estado de la Red</h2>
+            <h2 className="card-title"><Zap size={20} color="var(--accent)" /> Estado de Inventario</h2>
             <div className="stats-grid">
               <div className="stat-box">
-                <span className="stat-label">Nodos Críticos</span>
-                <span className="stat-value" style={{ color: 'var(--status-red)' }}>{globalStats.criticalCount}</span>
+                <span className="stat-label">Agotados</span>
+                <span className="stat-value" style={{ color: 'var(--status-out)' }}>{stats.out}</span>
+              </div>
+              <div className="stat-box">
+                <span className="stat-label">Quiebre &lt;24h</span>
+                <span className="stat-value" style={{ color: 'var(--status-red)' }}>{stats.red}</span>
               </div>
               <div className="stat-box">
                 <span className="stat-label">En Riesgo</span>
-                <span className="stat-value" style={{ color: 'var(--status-yellow)' }}>{globalStats.warningCount}</span>
+                <span className="stat-value" style={{ color: 'var(--status-yellow)' }}>{stats.yellow}</span>
               </div>
             </div>
           </div>
 
-          {/* Alerts List */}
           <div className="glass-card" style={{ flex: 1, overflow: 'hidden' }}>
-            <h2 className="card-title"><AlertTriangle size={20} color="var(--status-red)" /> Alertas Críticas de IA</h2>
+            <h2 className="card-title">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <AlertTriangle size={20} color="var(--status-red)" />
+                Panel de Alertas
+              </div>
+              <span style={{ fontSize: '0.8rem', background: '#f1f5f9', padding: '2px 8px', borderRadius: '12px' }}>
+                {sortedAlerts.length} locaciones
+              </span>
+            </h2>
+            
             <div className="alert-list">
-              {criticalAlerts.length === 0 ? (
+              {sortedAlerts.length === 0 ? (
                 <div style={{ textAlign: 'center', color: 'var(--status-green)', padding: '2rem 0' }}>
                   <PackageCheck size={40} style={{ margin: '0 auto 1rem', display: 'block' }} />
-                  Todos los nodos tienen stock saludable.
+                  La red está operando en niveles óptimos.
                 </div>
               ) : (
-                criticalAlerts.map(alert => {
+                sortedAlerts.map(alert => {
                   const status = getStatus(alert.stock, alert.dailySales);
+                  const details = getStatusDetails(status);
                   const daysLeft = (alert.stock / alert.dailySales).toFixed(1);
+                  
                   return (
                     <div key={alert.id} className={`alert-item ${status}`}>
                       <div className="alert-header">
                         <span className="alert-title">{alert.name}</span>
-                        <span className="alert-time">Hace instantes</span>
+                        <span className={`alert-badge badge-${status}`}>{details.label}</span>
                       </div>
                       <div className="alert-details">
                         <div className="alert-metric">
-                          <span>{alert.med}</span>
-                          <span className={`metric-value ${status}`}>{alert.stock} uds</span>
+                          <span style={{ fontSize: '0.8rem' }}>{alert.med}</span>
+                          <span className={`metric-value ${status}`}>{alert.stock} uds {status !== 'out' && `(~${daysLeft}d)`}</span>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
-                          <TrendingDown size={14} color={status === 'red' ? 'var(--status-red)' : 'var(--status-yellow)'} />
-                          Quiebre en: <strong>{daysLeft} días</strong>
-                        </div>
+                        <button className="mini-action-btn" onClick={(e) => handleRestockSingle(alert.id, e)}>
+                          <PackageCheck size={14} /> Abastecer
+                        </button>
                       </div>
                     </div>
                   );
@@ -191,17 +278,15 @@ function App() {
             </div>
           </div>
 
-          {/* Action Button */}
           <button 
-            className={`action-button ${criticalAlerts.length === 0 ? 'disabled' : ''}`}
-            onClick={handleRestock}
-            disabled={criticalAlerts.length === 0}
+            className={`action-button ${sortedAlerts.length === 0 ? 'disabled' : ''}`}
+            onClick={handleRestockAll}
+            disabled={sortedAlerts.length === 0}
           >
-            <PackageCheck size={20} />
-            Aprobar Reabastecimiento Predictivo
+            <Activity size={20} />
+            Ejecutar Logística Preventiva (Todo)
           </button>
         </aside>
-
       </main>
     </div>
   );
