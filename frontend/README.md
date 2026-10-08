@@ -1,16 +1,26 @@
-# React + Vite
+# Frontend de FarmaSeñal
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Interfaz React + Vite con mapa Leaflet. Muestra farmacias ubicadas por sector y señales de aumento de ventas por categoría, usando el backend que lee los CSV de `../data/`.
 
-Currently, two official plugins are available:
+## Inicio local
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Desde la raíz inicia el [backend](../backend/README.md). En otra terminal:
 
-## React Compiler
+```powershell
+cd frontend
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Vite reenvía `/api/*` a `http://127.0.0.1:8000`. La interfaz consulta `GET /api/v1/dashboard` y puede filtrar las señales por categoría. No contiene inventario ni acciones de reabastecimiento porque los CSV actuales no incluyen existencias.
 
-## Expanding the Oxlint configuration
+## Clave del mapa CARTO
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Solicita una clave para CARTO Basemaps en [carto.com/basemaps/apikey](https://carto.com/basemaps/apikey/); CARTO la envía por correo. Luego crea `frontend/.env.local` copiando `.env.example` y pega la clave:
+
+```dotenv
+VITE_CARTO_BASEMAPS_KEY=tu_clave_de_CARTO
+```
+
+Vite carga esa variable al iniciar: reinicia `npm run dev` después de crear o cambiar el archivo. La clave aparece en las solicitudes del navegador porque Leaflet pide las teselas directamente; restríngela en el dashboard de CARTO a `localhost:5173`, `127.0.0.1:5173` y al dominio de despliegue cuando exista. No la subas al repositorio ni la pegues en el chat. El repo ignora `.env.local`. Mantén visible la atribución de OpenStreetMap y CARTO.
+
+El mapa usa Leaflet y las teselas CARTO. Los datos del mapa y alertas vienen del API; los marcadores muestran el estado agregado de las señales en su sector. Una variación de ventas no identifica una causa médica.
