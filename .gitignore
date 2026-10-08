@@ -1,0 +1,25 @@
+# Configuracion local y secretos
+.env
+.env.*
+!.env.example
+!.env.example.*
+.aws/
+.aws-sam/
+*.pem
+*.p12
+*.pfx
+
+# Dependencias y archivos generados
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
