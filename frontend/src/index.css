@@ -577,11 +577,25 @@ body {
   inset: auto auto 1rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-  min-width: 150px;
-  padding: 0.75rem 0.85rem;
+  gap: 0.35rem;
+  width: 132px;
+  min-width: 132px;
+  padding: 0.65rem 0.75rem;
   color: var(--text-main);
   font-size: 0.74rem;
+  cursor: default;
+  transition: width 180ms ease, box-shadow 180ms ease;
+}
+
+.hex-legend:hover,
+.hex-legend:focus-within {
+  width: 184px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+}
+
+.hex-legend:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 .hex-legend strong {
@@ -589,13 +603,29 @@ body {
   font-size: 0.78rem;
 }
 
-.hex-legend span {
+.hex-legend-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 180ms ease, opacity 140ms ease;
+}
+
+.hex-legend:hover .hex-legend-details,
+.hex-legend:focus-within .hex-legend-details {
+  max-height: 8rem;
+  opacity: 1;
+}
+
+.hex-legend-details > span {
   display: flex;
   align-items: center;
   gap: 0.45rem;
 }
 
-.hex-legend small {
+.hex-legend-details small {
   margin-top: 0.1rem;
   color: var(--text-muted);
   font-size: 0.68rem;
@@ -608,12 +638,6 @@ body {
 }
 
 .legend-swatch.no-signal { background: #64748b; }
-
-.heat-scale {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
 
 .heat-gradient {
   display: block;
@@ -699,8 +723,12 @@ body {
   .hex-legend {
     inset: auto auto 0.65rem 0.65rem;
     min-width: 132px;
-    gap: 0.35rem;
     padding: 0.6rem 0.7rem;
     font-size: 0.68rem;
+  }
+
+  .hex-legend:hover,
+  .hex-legend:focus-within {
+    width: 178px;
   }
 }

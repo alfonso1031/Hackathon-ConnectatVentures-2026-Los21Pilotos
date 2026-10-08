@@ -255,7 +255,7 @@ function FitMapToPharmacies({ pharmacies }) {
   return null
 }
 
-const CollapsibleCard = ({ title, icon: Icon, iconColor, children, className = '', defaultOpen = true, extraHeader }) => {
+const CollapsibleCard = ({ title, icon: Icon, iconColor, children, className = '', defaultOpen = false, extraHeader }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   return (
     <div className={`glass-card ${className}`} style={{ flex: isOpen && className.includes('alert-card') ? 1 : 'none' }}>
@@ -478,15 +478,15 @@ function App() {
               {lastUpdated && ` · ${lastUpdated.toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit' })}`}
             </span>
           </div>
-          <div className="hex-legend" aria-label="Leyenda de intensidad de señales">
-            <strong>Intensidad por cercanía</strong>
-            <span><i className="legend-swatch no-signal" />Sin señal cercana</span>
-            <div className="heat-scale" aria-label="De menor a mayor intensidad">
-              <i className="heat-gradient" />
+          <div className="hex-legend" role="region" tabIndex={0} aria-label="Leyenda de intensidad de señales">
+            <strong>Intensidad</strong>
+            <i className="heat-gradient" aria-hidden="true" />
+            <div className="hex-legend-details">
+              <span><i className="legend-swatch no-signal" />Sin señal cercana</span>
               <div className="heat-scale-labels"><span>Menor</span><span>Mayor</span></div>
+              <small>El color se atenúa con la distancia</small>
+              <small>Se actualiza cada 30 s</small>
             </div>
-            <small>El color se atenúa con la distancia</small>
-            <small>Se actualiza cada 30 s</small>
           </div>
           {!loading && !error && pharmacies.length === 0 && (
             <div className="map-empty-state">No hay farmacias en el dataset.</div>
