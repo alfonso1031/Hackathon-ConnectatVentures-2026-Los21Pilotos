@@ -4,14 +4,15 @@ Interfaz React + Vite con mapa Leaflet. Muestra farmacias ubicadas por sector y 
 
 ## Inicio local
 
-Desde la raíz inicia el [backend](../backend/README.md). En otra terminal:
+Para usar la API AWS desplegada, desde `frontend` ejecuta:
 
 ```powershell
-cd frontend
 npm run dev
 ```
 
-Vite reenvía `/api/*` a `http://127.0.0.1:8000`. La interfaz consulta `GET /api/v1/dashboard` y puede filtrar las señales por categoría. No contiene inventario ni acciones de reabastecimiento porque los CSV actuales no incluyen existencias.
+Vite toma únicamente `VITE_API_BASE_URL` del `.env` PowerShell en la raíz. No carga ni expone las credenciales AWS. Para usar el backend local en vez de AWS, inicia el [backend](../backend/README.md) y, en esa terminal de PowerShell, define `$env:VITE_API_BASE_URL = ''` antes de `npm run dev`; Vite reenvía `/api/*` a `http://127.0.0.1:8000`.
+
+La interfaz consulta `GET /api/v1/dashboard` y ofrece una ventana de recomendaciones con filtros combinables por tipo, prioridad, decisión, producto y farmacia. Las decisiones se guardan localmente y Bedrock devuelve hasta tres señales prospectivas condicionales basadas en ventas recientes y cobertura. No son predicciones garantizadas. Los traslados son simulados y no cambian existencias.
 
 ## Clave del mapa CARTO
 

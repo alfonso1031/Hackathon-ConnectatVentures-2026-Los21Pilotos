@@ -1,7 +1,7 @@
 # Diseño: recomendaciones de abastecimiento con Amazon Bedrock
 
 **Fecha:** 2026-10-08  
-**Estado:** diseño conversacional aprobado; pendiente de revisión de esta especificación.  
+**Estado:** diseño aprobado e implementado localmente; integración AWS pendiente de configuración y despliegue.
 **Producto:** FarmaSeñal — Los 21 Pilotos.  
 **Línea confirmada por el equipo:** mejora operativa para Farmaenlace.
 

@@ -14,6 +14,13 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+try:
+    from .bedrock_summary import summarize_recommendations
+    from .recommendations import build_recommendations
+except ImportError:
+    from bedrock_summary import summarize_recommendations
+    from recommendations import build_recommendations
+
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
@@ -21,6 +28,7 @@ CSV_CONFIG = {
     "pharmacies": ("PHARMACIES_CSV", "farmacias.csv"),
     "products": ("PRODUCTS_CSV", "productos.csv"),
     "sales": ("SALES_CSV", "ventas.csv"),
+    "inventory": ("INVENTORY_CSV", "inventario.csv"),
 }
 FIELD_ALIASES = {
     "pharmacy_id": ("id_farmacia", "pharmacy_id", "branch_id", "id_sucursal"),
@@ -34,12 +42,26 @@ FIELD_ALIASES = {
     "sale_id": ("id_venta", "sale_id", "id_transaccion"),
     "sale_date": ("fecha", "sale_date", "fecha_venta", "date"),
     "quantity": ("cantidad", "quantity", "unidades_vendidas", "units_sold"),
+    "inventory_id": ("id_inventario", "inventory_id"),
+    "stock_actual": ("stock_actual", "current_stock", "stock"),
+    "stock_minimum": ("stock_minimo", "minimum_stock", "min_stock"),
+    "days_coverage": ("dias_cobertura", "days_coverage", "coverage_days"),
+    "stock_status": ("estado_stock", "stock_status", "status"),
+    "expiration_date": ("fecha_caducidad", "expiration_date", "expiry_date"),
 }
 RECENT_DAYS = 30
 BASELINE_DAYS = 90
 MIN_RECENT_TRANSACTIONS = 2
 MIN_BASELINE_TRANSACTIONS = 3
 ALERT_RATIO = 1.5
+STOCK_RISK_STATUSES = {"Agotado", "Bajo", "Crítico"}
+STOCK_STATUSES = {
+    "agotado": "Agotado",
+    "bajo": "Bajo",
+    "critico": "Crítico",
+    "normal": "Normal",
+    "excedente": "Excedente",
+}
 
 
 class DatasetUnavailable(Exception):
@@ -52,6 +74,10 @@ class DatasetInvalid(Exception):
 
 
 class CategoryNotFound(Exception):
+    pass
+
+
+class ProductNotFound(Exception):
     pass
 
 
@@ -140,13 +166,15 @@ def _number(
     return parsed
 
 
-def _parse_date(value: str | None, filename: str, row_number: int) -> date:
+def _parse_date(
+    value: str | None, filename: str, row_number: int, field: str = "fecha de venta"
+) -> date:
     if not value:
-        raise DatasetInvalid(f"{filename}, fila {row_number}: falta la fecha de venta.")
+        raise DatasetInvalid(f"{filename}, fila {row_number}: falta {field}.")
     try:
         return date.fromisoformat(value[:10])
     except ValueError as error:
-        raise DatasetInvalid(f"{filename}, fila {row_number}: la fecha debe usar formato AAAA-MM-DD.") from error
+        raise DatasetInvalid(f"{filename}, fila {row_number}: {field} debe usar formato AAAA-MM-DD.") from error
 
 
 def _load_dataset() -> dict[str, Any]:
@@ -213,16 +241,60 @@ def _load_dataset() -> dict[str, Any]:
             "quantity": _number(_value(row, "quantity", filename, line_number), filename, line_number, "cantidad") or 0.0,
         })
 
-    return {"pharmacies": pharmacies, "products": products, "sales": sales}
+    inventory: list[dict[str, Any]] = []
+    inventory_keys: set[tuple[str, str]] = set()
+    for line_number, row in enumerate(tables["inventory"], start=2):
+        filename = paths["inventory"].name
+        pharmacy_id = _value(row, "pharmacy_id", filename, line_number)
+        product_id = _value(row, "product_id", filename, line_number)
+        if pharmacy_id not in pharmacies or product_id not in products:
+            raise DatasetInvalid(f"{filename}, fila {line_number}: farmacia o producto no existe en sus CSV de referencia.")
+        key = (pharmacy_id, product_id)
+        if key in inventory_keys:
+            raise DatasetInvalid(f"{filename}, fila {line_number}: hay más de un registro para la farmacia/producto {pharmacy_id}/{product_id}.")
+        inventory_keys.add(key)
+
+        raw_status = _value(row, "stock_status", filename, line_number)
+        normalized_status = _normalize_header(raw_status)
+        if normalized_status not in STOCK_STATUSES:
+            allowed = ", ".join(STOCK_STATUSES.values())
+            raise DatasetInvalid(f"{filename}, fila {line_number}: estado de inventario inválido ({raw_status}); usa {allowed}.")
+
+        raw_expiration = _value(row, "expiration_date", filename, line_number, optional=True)
+        if raw_expiration:
+            _parse_date(raw_expiration, filename, line_number, "fecha de caducidad")
+        product = products[product_id]
+        inventory.append({
+            "id": _value(row, "inventory_id", filename, line_number, optional=True),
+            "pharmacyId": pharmacy_id,
+            "productId": product_id,
+            "productName": product["name"],
+            "category": product["category"],
+            "stockActual": _number(_value(row, "stock_actual", filename, line_number), filename, line_number, "stock_actual"),
+            "stockMinimum": _number(_value(row, "stock_minimum", filename, line_number), filename, line_number, "stock_minimo"),
+            "daysCoverage": _number(_value(row, "days_coverage", filename, line_number), filename, line_number, "dias_cobertura"),
+            "status": STOCK_STATUSES[normalized_status],
+            "expirationDate": raw_expiration,
+        })
+
+    return {"pharmacies": pharmacies, "products": products, "sales": sales, "inventory": inventory}
 
 
-def _dashboard(dataset: dict[str, Any], category_filter: str | None = None) -> dict[str, Any]:
+def _dashboard(
+    dataset: dict[str, Any], category_filter: str | None = None, product_filter: str | None = None
+) -> dict[str, Any]:
     pharmacies = dataset["pharmacies"]
     products = dataset["products"]
     sales = dataset["sales"]
+    inventory = dataset["inventory"]
     categories = sorted({product["category"] for product in products.values()}, key=str.casefold)
     if category_filter and category_filter not in categories:
         raise CategoryNotFound(category_filter)
+    if product_filter and product_filter not in products:
+        raise ProductNotFound(product_filter)
+    if product_filter and category_filter and products[product_filter]["category"] != category_filter:
+        raise ProductNotFound(product_filter)
+    product_rows = sorted(products.values(), key=lambda product: (product["name"].casefold(), product["id"]))
 
     as_of = max(sale["date"] for sale in sales)
     recent_start = as_of - timedelta(days=RECENT_DAYS - 1)
@@ -235,11 +307,14 @@ def _dashboard(dataset: dict[str, Any], category_filter: str | None = None) -> d
     )
     branch_recent: dict[str, float] = defaultdict(float)
     product_recent: dict[tuple[str, str, str], float] = defaultdict(float)
+    sector_totals: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"recentUnits": 0.0, "baselineUnits": 0.0}
+    )
     for sale in sales:
         pharmacy = pharmacies[sale["pharmacyId"]]
         product = products[sale["productId"]]
         category = product["category"]
-        if category_filter and category != category_filter:
+        if (category_filter and category != category_filter) or (product_filter and sale["productId"] != product_filter):
             continue
         quantity = sale["quantity"]
         key = (pharmacy["sectorId"], category)
@@ -249,9 +324,11 @@ def _dashboard(dataset: dict[str, Any], category_filter: str | None = None) -> d
             values["recentTransactions"] += 1
             branch_recent[sale["pharmacyId"]] += quantity
             product_recent[(pharmacy["sectorId"], category, sale["productId"])] += quantity
+            sector_totals[pharmacy["sectorId"]]["recentUnits"] += quantity
         elif baseline_start <= sale["date"] <= baseline_end:
             values["baselineUnits"] += quantity
             values["baselineTransactions"] += 1
+            sector_totals[pharmacy["sectorId"]]["baselineUnits"] += quantity
 
     alerts: list[dict[str, Any]] = []
     status_by_sector: dict[str, str] = {}
@@ -296,20 +373,107 @@ def _dashboard(dataset: dict[str, Any], category_filter: str | None = None) -> d
         })
     alerts.sort(key=lambda alert: (-alert["changePercent"], -alert["recentUnits"], alert["sector"], alert["category"]))
 
+    inventory_by_pharmacy: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    inventory_by_sector: dict[str, dict[str, Any]] = {}
+    for item in inventory:
+        if (category_filter and item["category"] != category_filter) or (product_filter and item["productId"] != product_filter):
+            continue
+        pharmacy = pharmacies[item["pharmacyId"]]
+        inventory_by_pharmacy[item["pharmacyId"]].append(item)
+        sector_id = pharmacy["sectorId"]
+        summary = inventory_by_sector.setdefault(sector_id, {
+            "sectorId": sector_id,
+            "recordCount": 0,
+            "riskCount": 0,
+            "criticalCount": 0,
+            "lowCount": 0,
+            "outOfStockCount": 0,
+            "coverageTotal": 0.0,
+            "pharmaciesAtRisk": set(),
+        })
+        summary["recordCount"] += 1
+        summary["coverageTotal"] += item["daysCoverage"]
+        if item["status"] in STOCK_RISK_STATUSES:
+            summary["riskCount"] += 1
+            summary["pharmaciesAtRisk"].add(item["pharmacyId"])
+        if item["status"] == "Crítico":
+            summary["criticalCount"] += 1
+        elif item["status"] == "Bajo":
+            summary["lowCount"] += 1
+        elif item["status"] == "Agotado":
+            summary["outOfStockCount"] += 1
+
+    inventory_sector_rows = []
+    for summary in inventory_by_sector.values():
+        records = summary["recordCount"]
+        inventory_sector_rows.append({
+            "sectorId": summary["sectorId"],
+            "recordCount": records,
+            "riskCount": summary["riskCount"],
+            "criticalCount": summary["criticalCount"],
+            "lowCount": summary["lowCount"],
+            "outOfStockCount": summary["outOfStockCount"],
+            "pharmaciesAtRisk": len(summary["pharmaciesAtRisk"]),
+            "riskPercent": round(summary["riskCount"] / records * 100, 1) if records else 0.0,
+            "averageCoverageDays": round(summary["coverageTotal"] / records, 1) if records else 0.0,
+        })
+    inventory_sector_rows.sort(key=lambda row: (-row["riskPercent"], -row["riskCount"], row["sectorId"].casefold()))
+
+    inventory_alerts = [
+        {
+            **item,
+            "pharmacyName": pharmacies[item["pharmacyId"]]["name"],
+            "sectorId": pharmacies[item["pharmacyId"]]["sectorId"],
+        }
+        for item in inventory
+        if ((not category_filter or item["category"] == category_filter)
+            and (not product_filter or item["productId"] == product_filter)
+            and item["status"] in STOCK_RISK_STATUSES)
+    ]
+    inventory_alerts.sort(key=lambda item: (
+        {"Agotado": 0, "Crítico": 1, "Bajo": 2}.get(item["status"], 3),
+        item["daysCoverage"],
+        item["sectorId"].casefold(),
+        item["productName"].casefold(),
+    ))
+
     pharmacy_rows = []
     for pharmacy in pharmacies.values():
+        pharmacy_inventory = sorted(
+            inventory_by_pharmacy.get(pharmacy["id"], []),
+            key=lambda item: (item["daysCoverage"], item["productName"].casefold()),
+        )
+        inventory_count = len(pharmacy_inventory)
+        risk_count = sum(item["status"] in STOCK_RISK_STATUSES for item in pharmacy_inventory)
         pharmacy_rows.append({
             **pharmacy,
             "recentUnits": round(branch_recent.get(pharmacy["id"], 0.0), 2),
             "status": status_by_sector.get(pharmacy["sectorId"], "green"),
+            "inventory": pharmacy_inventory,
+            "inventorySummary": {
+                "recordCount": inventory_count,
+                "riskCount": risk_count,
+                "riskPercent": round(risk_count / inventory_count * 100, 1) if inventory_count else 0.0,
+                "averageCoverageDays": round(
+                    sum(item["daysCoverage"] for item in pharmacy_inventory) / inventory_count, 1
+                ) if inventory_count else None,
+            },
         })
     pharmacy_rows.sort(key=lambda pharmacy: pharmacy["name"].casefold())
 
-    recent_units = sum(
-        sale["quantity"] for sale in sales
-        if recent_start <= sale["date"] <= as_of
-        and (not category_filter or products[sale["productId"]]["category"] == category_filter)
-    )
+    sector_metric_rows = []
+    for sector_id, values in sector_totals.items():
+        baseline_units = values["baselineUnits"]
+        change_percent = ((values["recentUnits"] / RECENT_DAYS) / (baseline_units / BASELINE_DAYS) - 1) * 100 if baseline_units else None
+        sector_metric_rows.append({
+            "sectorId": sector_id,
+            "recentUnits": round(values["recentUnits"], 2),
+            "baselineUnits": round(baseline_units, 2),
+            "changePercent": round(change_percent, 1) if change_percent is not None else None,
+        })
+    sector_metric_rows.sort(key=lambda row: row["sectorId"].casefold())
+
+    recent_units = sum(branch_recent.values())
     stats = {
         "totalPharmacies": len(pharmacies),
         "totalSectors": len({pharmacy["sectorId"] for pharmacy in pharmacies.values()}),
@@ -318,6 +482,11 @@ def _dashboard(dataset: dict[str, Any], category_filter: str | None = None) -> d
         "watchSignalCount": sum(alert["status"] == "yellow" for alert in alerts),
         "alertCount": len(alerts),
         "recentUnits": round(recent_units, 2),
+        "inventoryRecordCount": sum(row["recordCount"] for row in inventory_sector_rows),
+        "inventoryRiskCount": sum(row["riskCount"] for row in inventory_sector_rows),
+        "inventoryCriticalCount": sum(row["criticalCount"] for row in inventory_sector_rows),
+        "inventoryLowCount": sum(row["lowCount"] for row in inventory_sector_rows),
+        "inventoryOutOfStockCount": sum(row["outOfStockCount"] for row in inventory_sector_rows),
     }
     return {
         "dataStatus": "synthetic",
@@ -336,9 +505,14 @@ def _dashboard(dataset: dict[str, Any], category_filter: str | None = None) -> d
             "description": "Compara unidades vendidas en 30 días con el promedio diario de los 90 días anteriores.",
         },
         "categories": categories,
+        "products": product_rows,
         "selectedCategory": category_filter or "all",
+        "selectedProduct": product_filter or "all",
         "pharmacies": pharmacy_rows,
         "alerts": alerts,
+        "sectorMetrics": sector_metric_rows,
+        "inventorySectors": inventory_sector_rows,
+        "inventoryAlerts": inventory_alerts[:100],
         "stats": stats,
     }
 
@@ -359,13 +533,37 @@ def handle_api(
         try:
             dataset = _load_dataset()
             category = query.get("category")
-            return 200, _dashboard(dataset, str(category) if category else None)
+            product_id = query.get("product_id")
+            return 200, _dashboard(
+                dataset,
+                str(category) if category else None,
+                str(product_id) if product_id else None,
+            )
         except DatasetUnavailable as error:
             return _error(503, "DATA_NOT_READY", "Faltan CSV requeridos en data/.", missingFiles=error.missing)
         except DatasetInvalid as error:
             return _error(422, "DATA_INVALID", str(error))
         except CategoryNotFound as error:
             return _error(404, "CATEGORY_NOT_FOUND", "La categoría solicitada no existe en los CSV.", category=str(error))
+        except ProductNotFound as error:
+            return _error(404, "PRODUCT_NOT_FOUND", "El producto solicitado no existe o no pertenece a la categoría seleccionada.", productId=str(error))
+    if path == "/api/v1/recommendations" and method == "GET":
+        try:
+            return 200, build_recommendations(_load_dataset())
+        except DatasetUnavailable as error:
+            return _error(503, "DATA_NOT_READY", "Faltan CSV requeridos en data/.", missingFiles=error.missing)
+        except DatasetInvalid as error:
+            return _error(422, "DATA_INVALID", str(error))
+    if path == "/api/v1/recommendations/analyze" and method == "POST":
+        try:
+            recommendations = build_recommendations(_load_dataset())
+            return 200, {"dataStatus": "synthetic", **summarize_recommendations(recommendations)}
+        except DatasetUnavailable as error:
+            return _error(503, "DATA_NOT_READY", "Faltan CSV requeridos en data/.", missingFiles=error.missing)
+        except DatasetInvalid as error:
+            return _error(422, "DATA_INVALID", str(error))
+    if path in ("/api/v1/recommendations", "/api/v1/recommendations/analyze"):
+        return _error(405, "METHOD_NOT_ALLOWED", "Método HTTP no permitido.")
     if path.startswith("/api/") and method not in ("GET", "OPTIONS"):
         return _error(405, "METHOD_NOT_ALLOWED", "Método HTTP no permitido.")
     return _error(404, "NOT_FOUND", "Ruta no encontrada.")
@@ -387,7 +585,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "headers": {
             "Content-Type": "application/json; charset=utf-8",
             "Access-Control-Allow-Origin": cors_origin,
-            "Access-Control-Allow-Methods": "GET,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
             "Vary": "Origin",
         },

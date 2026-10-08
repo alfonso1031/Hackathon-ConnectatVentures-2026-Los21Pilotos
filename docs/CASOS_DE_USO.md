@@ -1,12 +1,12 @@
 # Casos de uso — FarmaSeñal
 
-**Estado:** propuesta para el prototipo; estos casos describen el comportamiento esperado y no confirman que ya esté implementado.
+**Estado:** el flujo de propuesta de CU-02 y la revisión/decisión local de CU-06 están implementados en la app local con datos sintéticos. CU-01, CU-03, CU-04 y CU-05 conservan alcance especificado/propuesto; su presencia aquí no significa que estén implementados por completo.
 
 ## Propósito y alcance
 
-El flujo principal de FarmaSeñal es operativo: el planificador consulta la demanda proyectada, simula un traslado entre sucursales y compara el resultado con una estrategia base. Como caso complementario, un analista podría visualizar cambios de ventas por sector que sirvan como señales tempranas de posibles tendencias de salud y revisarlas junto con otras fuentes. Todo el flujo se plantea con datos sintéticos.
+El flujo operativo implementado permite al planificador revisar propuestas de traslado entre sucursales y casos para vigilancia según inventario, caducidad, ventas agregadas y proximidad. Puede registrar una decisión como simulación, vigilancia o descarte en el navegador y solicitar un resumen a Amazon Bedrock. Como flujo separado, un analista podría revisar cambios de ventas por sector junto con otras fuentes. Todo el flujo de demo usa datos sintéticos.
 
-Este documento toma como alcance de referencia el [plan de implementación del backend](../backend/PLAN_IMPLEMENTACION_BACKEND.md). La asignación oficial de reto a Los 21 Pilotos sigue pendiente de confirmación. Además, [SOLUCION.md](SOLUCION.md) conserva una propuesta distinta, centrada en anticipar quiebres de stock y caducidad por producto; ambos documentos deben alinearse antes de congelar el alcance del producto.
+Este documento toma como alcance de referencia el [plan de implementación del backend](../backend/PLAN_IMPLEMENTACION_BACKEND.md). El equipo confirmó que la línea asignada a Los 21 Pilotos es **mejora operativa para Farmaenlace**; las fuentes oficiales revisadas no indican el equipo asignado a cada línea. El flujo operativo actual sigue el alcance de [SOLUCION.md](SOLUCION.md), con recomendaciones explicables y simuladas.
 
 Las señales representan cambios observados o estimados en ventas agregadas; pueden sugerir dónde revisar una posible tendencia de salud, pero no identifican una enfermedad ni estiman casos confirmados. La propuesta de mostrar posibles tendencias de salud amplía el plan backend actual, que define alertas de demanda y proyecciones de unidades por categoría, no un modelo epidemiológico. Para asociar señales a enfermedades concretas harían falta categorías justificadas y validadas por especialistas, datos de referencia y evaluación del modelo. Una variación también puede deberse a promociones, precios, disponibilidad u otros cambios operativos. No se usan datos de clientes ni transacciones individuales. La simulación no crea órdenes reales ni modifica el inventario; tampoco se presupone conexión con SAP ni acceso a datos reales de Farmaenlace.
 
@@ -16,8 +16,8 @@ Las señales representan cambios observados o estimados en ventas agregadas; pue
 |---|---|
 | **Analista de salud pública o vigilancia territorial** | Usuario propuesto para revisar las señales por sector con otras fuentes y decidir si ameritan investigación. Su participación debe confirmarse como parte del alcance del producto. |
 | **Planificador de abastecimiento** | Usuario del flujo operativo. Revisa proyecciones de demanda y evalúa una acción entre sucursales. |
-| **Fuente de datos sintéticos** | Proporciona el escenario JSON con sectores, sucursales, ventas agregadas e inventario. Puede leerse localmente durante el desarrollo o desde almacenamiento privado si el despliegue lo habilita. |
-| **Proveedor de rutas** | Servicio externo opcional para estimar tiempos y distancias por carretera. Si no está disponible, el sistema puede mostrar una distancia aproximada claramente identificada. |
+| **Fuente de datos sintéticos** | Proporciona los cuatro CSV de farmacias, productos, ventas e inventario. Se leen localmente durante el desarrollo o pueden incluirse en Lambda; S3 privado es una opción futura. |
+| **Proveedor de rutas** | Evolución futura opcional para estimar tiempos y distancias por carretera; no participa en la recomendación implementada. |
 
 El cliente y las sucursales son beneficiarios indirectos de una mejor disponibilidad; no interactúan con el prototipo descrito aquí.
 
@@ -25,10 +25,10 @@ El cliente y las sucursales son beneficiarios indirectos de una mejor disponibil
 
 ```mermaid
 flowchart LR
-    A[Planificador] --> B[Consulta proyección de demanda]
-    B --> C[Simula traslado entre sucursales]
-    C --> D[Compara estrategias y métricas estimadas]
-    E[Analista territorial] -. caso complementario .-> F[Visualiza señales por sector]
+    A[Planificador] --> B[Revisa recomendaciones de inventario]
+    B --> C[Simula, vigila o descarta en el navegador]
+    B --> D[Solicita resumen Bedrock bajo demanda]
+    E[Analista territorial] -. alcance separado .-> F[Visualiza señales de ventas por sector]
     F --> G[Explora el detalle de la señal]
 ```
 
@@ -60,26 +60,52 @@ flowchart LR
 | Campo | Descripción |
 |---|---|
 | **Actor principal** | Planificador de abastecimiento. |
-| **Actores de apoyo** | Proveedor de rutas, si está habilitado. |
-| **Objetivo** | Evaluar si una sucursal con excedente puede cubrir parte de la demanda proyectada de otra sucursal. |
-| **Disparador** | El planificador solicita una recomendación desde una alerta o su detalle. |
-| **Precondiciones** | Existe un escenario con inventario y sucursales; la alerta o selección identifica la categoría que se evaluará. |
+| **Actores de apoyo** | Ninguno en el flujo actual; un proveedor de rutas queda como evolución futura. |
+| **Objetivo** | Evaluar si una sucursal con excedente puede cubrir parte del faltante actual de inventario de otra sucursal. |
+| **Disparador** | El planificador revisa las propuestas de la pestaña Recomendaciones. |
+| **Precondiciones** | Existe un escenario sintético con stock, mínimos, caducidad y sucursales identificadas. |
 
 ### Flujo principal
 
-1. El sistema estima el faltante proyectado en la sucursal destino.
-2. Busca sucursales origen con excedente seguro, respetando la reserva mínima y los datos de caducidad disponibles.
-3. Compara las alternativas por ubicación y tiempo o distancia de ruta.
-4. El sistema devuelve categoría, cantidad sugerida, origen, destino, ruta o estimación disponible y efecto operativo estimado.
-5. El planificador revisa la justificación y el estado de la ruta.
+1. El sistema detecta destinos en estado agotado, crítico o bajo cuyo stock está por debajo del mínimo registrado.
+2. Busca sucursales origen con excedente del mismo producto, reserva mínima, caducidad futura conocida y coordenadas válidas.
+3. Ordena los orígenes por distancia geográfica aproximada en línea recta y descuenta temporalmente cantidades ya propuestas en la misma evaluación.
+4. El sistema devuelve producto, cantidad hasta el faltante del mínimo, origen, destino, cobertura y evidencias; si la cobertura es parcial o no hay origen elegible, añade un caso de vigilancia.
+5. El planificador revisa la propuesta. No hay ruta vial, tiempo de viaje ni efecto económico calculado en este flujo.
 
 ### Alternativas y errores
 
 - **Ningún origen tiene excedente seguro:** se informa que no hay traslado recomendado.
-- **Faltan datos de inventario, coordenadas o caducidad:** se explica qué criterio no pudo evaluarse y se limita la recomendación.
-- **Proveedor de rutas no disponible:** se usa otro proveedor solo si está configurado; si no, puede mostrarse distancia en línea recta con la etiqueta `approximate`, sin llamarla ruta vial.
+- **Faltan datos de inventario, coordenadas o caducidad:** se explica qué criterio no pudo evaluarse y se limita la recomendación. Si una fecha tiene formato inválido, la API rechaza el dataset.
+- **Coordenadas, caducidad o excedente insuficientes:** no se ofrece ese origen y se explica la limitación en el caso de vigilancia.
 
 **Postcondición:** se presenta una recomendación simulada. No se crea una orden, no se reserva producto y no se modifica el inventario.
+
+## CU-06 — Revisar recomendaciones y tomar una decisión local
+
+| Campo | Descripción |
+|---|---|
+| **Actor principal** | Planificador de abastecimiento. |
+| **Objetivo** | Priorizar sucursales para reabastecimiento simulado o vigilancia usando propuestas trazables. |
+| **Disparador** | El planificador abre la pestaña **Recomendaciones**. |
+| **Precondiciones** | Los cuatro CSV sintéticos son legibles por la API. El resumen Bedrock requiere además un modelo/región/rol configurados. |
+
+### Flujo principal
+
+1. La vista solicita las recomendaciones calculadas sobre el dataset completo, sin heredar los filtros activos del mapa.
+2. Presenta conteos de traslados simulables, vigilancia, decisiones locales y unidades aún sin cubrir.
+3. El planificador revisa producto, origen/destino, cantidad, estado/cobertura, caducidad, distancia aproximada y evidencia de ventas coincidentes.
+4. El planificador elige **Simular traslado**, **Poner en vigilancia** o **Descartar**. La decisión se guarda únicamente en `localStorage` del navegador actual y puede limpiarse.
+5. Si desea explicación, pulsa **Analizar con AWS AI**. Bedrock resume las propuestas ya calculadas; si AWS no está disponible, se mantiene el resultado por reglas con etiqueta de modo local/simulado.
+
+### Alternativas y errores
+
+- **Faltan CSV o tienen valores inválidos:** la vista informa el error y permite reintentar.
+- **No hay propuestas:** se muestra un estado vacío explicable.
+- **Bedrock no está configurado o falla:** las recomendaciones permanecen disponibles y la respuesta identifica el proveedor `fallback`.
+- **El usuario cambia de dispositivo o limpia el almacenamiento:** las decisiones locales dejan de estar disponibles; no se sincronizan con otros usuarios.
+
+**Postcondición:** queda una decisión de demo vinculada a la recomendación en el navegador actual. No se cambia inventario ni se genera una orden real.
 
 ## CU-03 — Comparar estrategias e impacto estimado
 
@@ -175,7 +201,7 @@ Si el costo base es cero, se informa la diferencia absoluta en vez del porcentaj
 1. Los datos de la demo deben identificarse como sintéticos.
 2. Una desviación de ventas es una señal de demanda, no una explicación causal. Solo CU-05 puede mostrar una hipótesis de tendencia de salud y únicamente con una relación entre categorías y síntomas previamente validada.
 3. Los resultados dependen de la calidad y suficiencia del historial; cuando falten datos se debe explicar la limitación.
-4. Las rutas aproximadas deben distinguirse de rutas viales calculadas por un proveedor.
+4. La distancia en línea recta se identifica como aproximada y no como una ruta vial o tiempo de viaje.
 5. Toda recomendación de traslado es simulada y no debe afectar inventarios u órdenes reales.
 
 ## Límite epidemiológico y validación
@@ -188,10 +214,11 @@ Para avanzar de una alerta de demanda a una alerta de una posible enfermedad se 
 
 | Caso | Referencia principal |
 |---|---|
+| CU-06 | [Diseño de recomendaciones Bedrock](superpowers/specs/2026-10-08-recommendations-bedrock-design.md) y [plan backend](../backend/PLAN_IMPLEMENTACION_BACKEND.md) |
 | CU-04 y CU-05 | Extienden la alerta de demanda del [plan backend](../backend/PLAN_IMPLEMENTACION_BACKEND.md) con un análisis territorial complementario; la hipótesis de salud requiere validación epidemiológica. |
 | CU-01 y CU-02 | [Plan de implementación del backend](../backend/PLAN_IMPLEMENTACION_BACKEND.md) |
 | CU-03 | [Impacto esperado y medición](IMPACTO.md) |
 | Alcance de producto y demo | [Propuesta de solución](SOLUCION.md) |
 | Prioridades de evaluación | [Rúbrica del hackathon](RUBRICA.md) |
 
-**Pendiente de producto:** confirmar el reto asignado a Los 21 Pilotos y conciliar la diferencia entre el flujo de FarmaSeñal de este documento y la propuesta de reabastecimiento por quiebres/caducidad de `SOLUCION.md`.
+**Pendiente de producto/infraestructura:** configurar y verificar en el sandbox el modelo Bedrock, la región y el permiso mínimo del rol; el análisis de IA no se ha conectado a una cuenta AWS ni se ha desplegado. La vigilancia epidemiológica CU-04/CU-05 es un alcance separado y no forma parte de las recomendaciones de inventario CU-06.

@@ -17,7 +17,7 @@ Estos documentos reúnen las reglas, criterios y referencias que encontramos en 
 - [Guía del sandbox AWS](GUIA_AWS.md): acceso y restricciones de seguridad compartidas para el evento.
 - [Agenda](AGENDA.md): horarios y cierre de entregas.
 - [Recursos de Cursor](RECURSOS_CURSOR.md): tratamiento seguro del archivo de referidos.
-- [Propuesta inicial de arquitectura AWS](ARQUITECTURA_AWS.md): stack mínimo recomendado, pendiente de confirmar el reto asignado y los permisos del sandbox.
+- [Arquitectura AWS](ARQUITECTURA_AWS.md): flujo implementado localmente y configuración pendiente para Bedrock y el sandbox.
 
 ## Fuentes revisadas
 
@@ -29,10 +29,12 @@ Estos documentos reúnen las reglas, criterios y referencias que encontramos en 
 - `Agenda minuto a minuto — Hackathon Connect atVentures.pdf`.
 - `Links para Cursor.pdf`.
 
-## Pendientes de confirmar
+## Estado y pendientes
 
-1. El material disponible no identifica cuál de las líneas de reto fue asignada a Los 21 Pilotos. La carpeta del equipo en Drive estaba vacía al revisar las fuentes.
-2. Las reglas y el acuerdo difieren sobre los derechos del trabajo creado durante el hackathon. Consulta [el resumen del acuerdo](ACUERDO_PARTICIPACION.md) y pide aclaración escrita antes de asumir las condiciones de propiedad intelectual.
-3. El PDF de Cursor contiene datos personales y códigos de referido por equipo; no se copiaron esos valores. La guía de AWS también contiene un código de acceso al sandbox; consúltalo en el original y no lo publiques en el repo.
+El equipo confirmó que a Los 21 Pilotos le asignaron **mejora operativa para Farmaenlace**. Esta confirmación viene del equipo; las fuentes oficiales revisadas describen las líneas del reto, pero no identifican la asignación del equipo.
+
+1. Las reglas y el acuerdo difieren sobre los derechos del trabajo creado durante el hackathon. Consulta [el resumen del acuerdo](ACUERDO_PARTICIPACION.md) y pide aclaración escrita antes de asumir las condiciones de propiedad intelectual.
+2. El PDF de Cursor contiene datos personales y códigos de referido por equipo; no se copiaron esos valores. La guía de AWS también contiene un código de acceso al sandbox; consúltalo en el original y no lo publiques en el repo.
+3. La API AWS de la demo ya está desplegada en `us-east-1`: Lambda usa Amazon Nova Micro bajo demanda, el rol limita `bedrock:InvokeModel` a ese modelo y API Gateway limita el análisis a una solicitud por segundo. Los datos siguen siendo sintéticos; el endpoint está en `VITE_API_BASE_URL` del `.env` local, que no se publica.
 
 Estos archivos resumen las fuentes y no sustituyen los documentos originales ni las instrucciones actualizadas de la organización.

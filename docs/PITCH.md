@@ -14,8 +14,8 @@
 | **Nombre del Producto** | **FarmaSeñal** (Inteligencia Geoespacial para la Cadena de Salud y Abastecimiento) |
 | **Problema Central** | Quiebres de stock locales y ventas perdidas en medicamentos críticos (cardiovasculares, analgésicos, respiratorios), provocados por un modelo de reposición reactivo que no considera la demanda territorial ni la proximidad entre farmacias. |
 | **Usuario Objetivo** | Planificador de abastecimiento y analista de operaciones de Farmaenlace (beneficiando directamente al adulto mayor y cliente frecuente en percha). |
-| **Solución Construida** | Plataforma analítica geoespacial con mapa interactivo en tiempo real (React + Leaflet + CARTO) y API backend (Python / AWS Lambda) que detecta anomalías estadísticas en ventanas móviles (30 vs. 90 días) para alertar riesgos de desabastecimiento e identificar oportunidades de traslado entre sucursales. |
-| **Diferenciador Clave** | La decisión incorpora **ubicación, tiempo de ruta, demanda agregada por sector y rotación de producto**, evitando traslados ciegos y reduciendo la pérdida de clientes por falta de stock. |
+| **Solución Construida** | Plataforma analítica geoespacial con mapa interactivo (React + Leaflet + CARTO) y API backend en Python / AWS Lambda que detecta anomalías estadísticas en ventanas móviles (30 vs. 90 días), calcula propuestas simuladas de reabastecimiento y deja a Amazon Bedrock resumirlas bajo demanda. |
+| **Diferenciador Clave** | La decisión incorpora **ubicación aproximada, demanda agregada por sector y rotación de producto**, para revisar posibles traslados antes de que ocurra un quiebre de stock. |
 
 ---
 
@@ -56,7 +56,7 @@
 > 3. **Visión por categorías sensibles:** *Al filtrar por 'Cardiovasculares', 'Analgésicos' o 'Respiratorios', el planificador identifica al instante qué sector experimenta aceleración y cuál es el producto tractor.*
 > 4. **Balanceo preventivo entre farmacias:** *El sistema no solo muestra el mapa; genera la recomendación para transferir excedentes entre sucursales de proximidad antes de que ocurra el quiebre.*
 >
-> *Técnicamente, construimos una arquitectura modular: frontend responsivo en **React + Leaflet** consumiendo una API REST en **Python**, lista para desplegarse en **AWS Lambda y API Gateway** e integrarse con Vendix POS y SAP."*
+> *Técnicamente, el backend REST en **Python** está desplegado en **AWS Lambda detrás de API Gateway** y usa **Amazon Bedrock** para resumir propuestas bajo demanda. La integración con Vendix POS y SAP queda como trabajo futuro para un piloto con datos autorizados.*
 
 ---
 

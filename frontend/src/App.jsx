@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { MapContainer, Polygon, Popup, TileLayer, useMap } from 'react-leaflet'
-import { Activity, AlertCircle, AlertTriangle, Bell, PackageCheck, RefreshCw, Zap } from 'lucide-react'
+import { MapContainer, Pane, TileLayer, useMap } from 'react-leaflet'
+import { Activity, AlertCircle, AlertTriangle, Bell, PackageCheck, RefreshCw } from 'lucide-react'
 import L from 'leaflet'
 import './App.css'
 
@@ -10,11 +10,20 @@ const CARTO_TILES = `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.
 const DEFAULT_CENTER = [-0.18, -78.48]
 const HEX_RADIUS_METERS = 350
 const MIN_HEX_RADIUS_PIXELS = 5.5
+const PHARMACY_DOT_RADIUS_PIXELS = 1.7
+const PHARMACY_DOT_OUTLINE_RADIUS_PIXELS = 3
 const HEX_FIT_PADDING = 30
+const HEX_VIEW_BUFFER_RATIO = 0.3
+const HEX_VIEW_REFRESH_MARGIN_RATIO = 0.08
 const HEAT_INFLUENCE_RADIUS_METERS = 3_000
 const HEAT_SIGMA_METERS = 1_450
-const AUTO_REFRESH_MS = 30_000
 const EMPTY_ARRAY = []
+const METRIC_OPTIONS = [
+  { value: 'signal', label: 'Intensidad de señales', low: 'Menor señal', high: 'Mayor señal', note: 'La intensidad baja al alejarse de farmacias con alzas.' },
+  { value: 'sales', label: 'Ventas recientes (30 días)', low: 'Menos unidades', high: 'Más unidades', note: 'Escala relativa a los hexágonos visibles; el detalle muestra la cantidad.' },
+  { value: 'change', label: 'Aumento frente a la base', low: 'Sin alza', high: 'Mayor alza', note: 'Compara la tasa reciente con los 90 días anteriores.' },
+  { value: 'inventory', label: 'Riesgo de inventario', low: 'Menor riesgo', high: 'Mayor riesgo', note: 'Proporción de registros de inventario en estado crítico, bajo o agotado.' },
+]
 const HEAT_COLOR_STOPS = [
   { score: 0.025, color: '#60a5fa' },
   { score: 0.16, color: '#22d3ee' },
@@ -89,21 +98,29 @@ function getHeatColor(score) {
 }
 
 function getHeatStyle(score) {
-  if (score < 0.025) {
+  const boundedScore = Math.max(0, Math.min(score, 1))
+  if (boundedScore < 0.025) {
     return { color: '#94a3b8', fillOpacity: 0.055, opacity: 0.28 }
   }
-  const normalizedScore = (score - 0.025) / 0.975
+  const normalizedScore = (boundedScore - 0.025) / 0.975
   return {
-    color: getHeatColor(score),
+    color: getHeatColor(boundedScore),
     fillOpacity: 0.12 + normalizedScore * 0.46,
     opacity: 0.4 + normalizedScore * 0.48,
   }
 }
 
-function buildHexCells(map, pharmacies, alerts) {
+function buildHexCells(map, pharmacies, alerts, sectorMetrics) {
   const zoom = map.getZoom()
   const radius = getHexRadius(map, zoom)
-  const viewport = map.getPixelBounds()
+  const visibleBounds = map.getPixelBounds()
+  const mapSize = map.getSize()
+  const bufferX = Math.ceil(mapSize.x * HEX_VIEW_BUFFER_RATIO)
+  const bufferY = Math.ceil(mapSize.y * HEX_VIEW_BUFFER_RATIO)
+  const viewport = L.bounds(
+    L.point(visibleBounds.min.x - bufferX, visibleBounds.min.y - bufferY),
+    L.point(visibleBounds.max.x + bufferX, visibleBounds.max.y + bufferY),
+  )
   const viewportCorners = [
     viewport.min,
     L.point(viewport.max.x, viewport.min.y),
@@ -140,11 +157,17 @@ function buildHexCells(map, pharmacies, alerts) {
         center,
         pharmacyCount: 0,
         recentUnits: 0,
+        inventoryRecordCount: 0,
+        inventoryRiskCount: 0,
+        inventoryCoverageTotal: 0,
+        inventoryItems: [],
         sectors: new Set(),
       })
     }
   }
 
+  const latitude = map.getCenter().lat * Math.PI / 180
+  const metersPerPixel = 156543.03392804097 * Math.cos(latitude) / (2 ** zoom)
   const activeSources = []
   pharmacies.forEach((pharmacy) => {
     if (!Number.isFinite(pharmacy.lat) || !Number.isFinite(pharmacy.lng)) return
@@ -158,12 +181,16 @@ function buildHexCells(map, pharmacies, alerts) {
       cell.pharmacyCount += 1
       cell.recentUnits += Number.isFinite(pharmacy.recentUnits) ? pharmacy.recentUnits : 0
       cell.sectors.add(pharmacy.sectorId)
+      const inventorySummary = pharmacy.inventorySummary || {}
+      cell.inventoryRecordCount += inventorySummary.recordCount || 0
+      cell.inventoryRiskCount += inventorySummary.riskCount || 0
+      cell.inventoryCoverageTotal += (inventorySummary.averageCoverageDays || 0) * (inventorySummary.recordCount || 0)
+      cell.inventoryItems.push(...(pharmacy.inventory || []))
     }
-    const location = L.latLng(pharmacy.lat, pharmacy.lng)
     if (pharmacy.status === 'red') {
-      activeSources.push({ pharmacy, location, strength: 1 })
+      activeSources.push({ pharmacy, x: point.x, y: point.y, strength: 1 })
     } else if (pharmacy.status === 'yellow') {
-      activeSources.push({ pharmacy, location, strength: 0.62 })
+      activeSources.push({ pharmacy, x: point.x, y: point.y, strength: 0.62 })
     }
   })
 
@@ -174,61 +201,320 @@ function buildHexCells(map, pharmacies, alerts) {
     alertsBySector.set(alert.sector, sectorAlerts)
   })
 
-  const maxDistanceSquared = HEAT_INFLUENCE_RADIUS_METERS ** 2
-  const sigmaFactor = 2 * HEAT_SIGMA_METERS ** 2
+  const maxDistanceSquared = (HEAT_INFLUENCE_RADIUS_METERS / metersPerPixel) ** 2
+  const sigmaFactor = 2 * (HEAT_SIGMA_METERS / metersPerPixel) ** 2
+  const metricBySector = new Map(sectorMetrics.map((item) => [item.sectorId, item]))
+  const sourceBucketSize = Math.sqrt(maxDistanceSquared)
+  const sourceBuckets = new Map()
+  activeSources.forEach((source) => {
+    const bucketId = `${Math.floor(source.x / sourceBucketSize)}:${Math.floor(source.y / sourceBucketSize)}`
+    const bucket = sourceBuckets.get(bucketId) || []
+    bucket.push(source)
+    sourceBuckets.set(bucketId, bucket)
+  })
 
-  return [...bins.values()].map((cell) => {
-    const cellLocation = map.unproject(cell.center, zoom)
-    const positions = Array.from({ length: 6 }, (_, index) => {
-      const angle = (Math.PI / 180) * (60 * index - 30)
-      const x = cell.center.x + radius * Math.cos(angle)
-      const y = cell.center.y + radius * Math.sin(angle)
-      const coordinate = map.unproject(L.point(x, y), zoom)
-      return [coordinate.lat, coordinate.lng]
-    })
+  const cells = [...bins.values()].map((cell) => {
     let remainingIntensity = 1
     let nearbySignalCount = 0
     const nearbySectorIntensity = new Map()
+    const bucketX = Math.floor(cell.center.x / sourceBucketSize)
+    const bucketY = Math.floor(cell.center.y / sourceBucketSize)
 
-    activeSources.forEach((source) => {
-      const distance = map.distance(cellLocation, source.location)
-      const distanceSquared = distance * distance
-      if (distanceSquared > maxDistanceSquared) return
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const candidates = sourceBuckets.get(`${bucketX + offsetX}:${bucketY + offsetY}`) || EMPTY_ARRAY
+        candidates.forEach((source) => {
+          const dx = cell.center.x - source.x
+          const dy = cell.center.y - source.y
+          const distanceSquared = dx * dx + dy * dy
+          if (distanceSquared > maxDistanceSquared) return
 
-      const contribution = source.strength * Math.exp(-distanceSquared / sigmaFactor)
-      if (contribution < 0.025) return
-      remainingIntensity *= 1 - contribution
-      nearbySignalCount += 1
-      if (source.pharmacy.sectorId) {
-        nearbySectorIntensity.set(
-          source.pharmacy.sectorId,
-          Math.max(nearbySectorIntensity.get(source.pharmacy.sectorId) || 0, contribution),
-        )
+          const contribution = source.strength * Math.exp(-distanceSquared / sigmaFactor)
+          if (contribution < 0.025) return
+          remainingIntensity *= 1 - contribution
+          nearbySignalCount += 1
+          if (source.pharmacy.sectorId) {
+            nearbySectorIntensity.set(
+              source.pharmacy.sectorId,
+              Math.max(nearbySectorIntensity.get(source.pharmacy.sectorId) || 0, contribution),
+            )
+          }
+        })
       }
-    })
+    }
 
     const nearbySectors = [...nearbySectorIntensity.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .map(([sector]) => sector)
     const sectors = [...cell.sectors].filter(Boolean).sort((a, b) => a.localeCompare(b))
+    const sectorChanges = sectors
+      .map((sector) => metricBySector.get(sector)?.changePercent)
+      .filter(Number.isFinite)
+    const changePercent = sectorChanges.length ? Math.max(...sectorChanges) : null
     const cellAlerts = [...new Map(
       nearbySectors
         .flatMap((sector) => alertsBySector.get(sector) || [])
         .map((alert) => [alert.id, alert]),
     ).values()]
-    const score = 1 - remainingIntensity
 
     return {
       ...cell,
-      positions,
       sectors,
       nearbySectors,
       nearbySignalCount,
       alerts: cellAlerts,
-      score,
-      style: getHeatStyle(score),
+      signalScore: 1 - remainingIntensity,
+      changePercent,
+      inventoryRiskPercent: cell.inventoryRecordCount
+        ? cell.inventoryRiskCount / cell.inventoryRecordCount * 100
+        : null,
+      averageCoverageDays: cell.inventoryRecordCount
+        ? cell.inventoryCoverageTotal / cell.inventoryRecordCount
+        : null,
     }
   })
+
+  const maxRecentUnits = cells.reduce((maximum, cell) => Math.max(maximum, cell.recentUnits), 0)
+  const cellsById = new Map(cells.map((cell) => [cell.id, cell]))
+  return { cells, cellsById, radius, zoom, maxRecentUnits, bounds: viewport, bufferX, bufferY }
+}
+
+function getCellScore(cell, metric, maxRecentUnits) {
+  if (metric === 'sales') return maxRecentUnits ? cell.recentUnits / maxRecentUnits : 0
+  if (metric === 'change') return Math.max(0, Math.min((cell.changePercent || 0) / 200, 1))
+  if (metric === 'inventory') return Math.max(0, Math.min((cell.inventoryRiskPercent || 0) / 100, 1))
+  return cell.signalScore
+}
+
+function createMapPopup(cell) {
+  const content = document.createElement('div')
+  content.className = 'map-popup'
+  const heading = document.createElement('h3')
+  heading.textContent = 'Detalle del hexágono'
+  content.append(heading)
+
+  const hasRecordedData = cell.pharmacyCount > 0
+    || cell.recentUnits > 0
+    || cell.inventoryRecordCount > 0
+    || cell.nearbySignalCount > 0
+    || cell.alerts.length > 0
+  if (!hasRecordedData) {
+    content.classList.add('map-popup-empty')
+    const message = document.createElement('p')
+    message.textContent = 'Sin farmacias, ventas ni inventario registrados en esta celda.'
+    content.append(message)
+    return content
+  }
+
+  const addLine = (label, value) => {
+    const paragraph = document.createElement('p')
+    const strong = document.createElement('strong')
+    strong.textContent = `${label}: `
+    paragraph.append(strong, document.createTextNode(String(value)))
+    content.append(paragraph)
+  }
+
+  addLine('Sectores', cell.sectors.join(', ') || 'Sin farmacia')
+  addLine('Farmacias en la celda', formatNumber(cell.pharmacyCount))
+  addLine('Unidades vendidas en 30 días', formatNumber(cell.recentUnits, 1))
+  addLine('Variación máxima frente a la base', cell.changePercent === null ? 'Sin base suficiente' : `${cell.changePercent > 0 ? '+' : ''}${formatNumber(cell.changePercent, 1)}%`)
+  addLine('Productos en inventario', formatNumber(cell.inventoryRecordCount))
+  addLine('Inventario con riesgo', cell.inventoryRiskPercent === null ? 'Sin datos' : `${formatNumber(cell.inventoryRiskPercent, 1)}%`)
+  addLine('Cobertura promedio', cell.averageCoverageDays === null ? 'Sin datos' : `${formatNumber(cell.averageCoverageDays, 1)} días`)
+
+  const inventoryRows = [...cell.inventoryItems]
+    .sort((a, b) => ({ Agotado: 0, Crítico: 1, Bajo: 2 }[a.status] ?? 3) - ({ Agotado: 0, Crítico: 1, Bajo: 2 }[b.status] ?? 3) || a.daysCoverage - b.daysCoverage)
+    .slice(0, 6)
+  if (inventoryRows.length) {
+    const inventoryHeading = document.createElement('strong')
+    inventoryHeading.textContent = 'Inventario por producto'
+    content.append(inventoryHeading)
+    const list = document.createElement('ul')
+    list.className = 'hex-alert-list'
+    inventoryRows.forEach((item) => {
+      const row = document.createElement('li')
+      row.textContent = `${item.productName} · ${item.status}: ${formatNumber(item.stockActual)} / ${formatNumber(item.stockMinimum)} uds. · ${formatNumber(item.daysCoverage, 1)} días`
+      list.append(row)
+    })
+    content.append(list)
+  }
+
+  if (cell.alerts.length) {
+    const alertsHeading = document.createElement('strong')
+    alertsHeading.textContent = 'Señales cercanas'
+    content.append(alertsHeading)
+    const list = document.createElement('ul')
+    list.className = 'hex-alert-list'
+    cell.alerts.slice(0, 5).forEach((alert) => {
+      const row = document.createElement('li')
+      row.textContent = `${alert.sector} · ${alert.category}: +${formatNumber(alert.changePercent, 1)}%`
+      list.append(row)
+    })
+    content.append(list)
+  }
+  return content
+}
+
+function HexHeatmapLayer({ pharmacies, alerts, sectorMetrics, metric, heatOpacity }) {
+  const map = useMap()
+  const [grid, setGrid] = useState(() => buildHexCells(map, pharmacies, alerts, sectorMetrics))
+  const drawRef = useRef(null)
+  const gridRef = useRef(grid)
+  const metricRef = useRef(metric)
+  const opacityRef = useRef(heatOpacity)
+
+  useEffect(() => {
+    gridRef.current = grid
+    metricRef.current = metric
+    opacityRef.current = heatOpacity
+    drawRef.current?.()
+  }, [grid, metric, heatOpacity])
+
+  useEffect(() => {
+    let frameId = 0
+    const refreshHexGrid = () => {
+      if (frameId) return
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0
+        setGrid(buildHexCells(map, pharmacies, alerts, sectorMetrics))
+      })
+    }
+    const refreshWhenNearGridEdge = () => {
+      const grid = gridRef.current
+      if (!grid?.bounds) {
+        refreshHexGrid()
+        return
+      }
+      const visibleBounds = map.getPixelBounds()
+      const size = map.getSize()
+      const horizontalMargin = Math.min(
+        visibleBounds.min.x - grid.bounds.min.x,
+        grid.bounds.max.x - visibleBounds.max.x,
+      )
+      const verticalMargin = Math.min(
+        visibleBounds.min.y - grid.bounds.min.y,
+        grid.bounds.max.y - visibleBounds.max.y,
+      )
+      if (
+        horizontalMargin < size.x * HEX_VIEW_REFRESH_MARGIN_RATIO
+        || verticalMargin < size.y * HEX_VIEW_REFRESH_MARGIN_RATIO
+      ) refreshHexGrid()
+    }
+
+    map.on('zoomend', refreshHexGrid)
+    map.on('moveend', refreshHexGrid)
+    map.on('resize', refreshHexGrid)
+    map.on('move', refreshWhenNearGridEdge)
+    refreshHexGrid()
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId)
+      map.off('zoomend', refreshHexGrid)
+      map.off('moveend', refreshHexGrid)
+      map.off('resize', refreshHexGrid)
+      map.off('move', refreshWhenNearGridEdge)
+    }
+  }, [map, pharmacies, alerts, sectorMetrics])
+
+  useEffect(() => {
+    const canvas = L.DomUtil.create('canvas', 'hex-heat-canvas')
+    canvas.style.position = 'absolute'
+    canvas.style.left = '0'
+    canvas.style.top = '0'
+    canvas.style.pointerEvents = 'none'
+    map.getPanes().overlayPane.appendChild(canvas)
+
+    const drawCanvas = () => {
+      const size = map.getSize()
+      const currentGrid = gridRef.current
+      const bufferX = currentGrid?.bufferX || 0
+      const bufferY = currentGrid?.bufferY || 0
+      const canvasWidth = size.x + bufferX * 2
+      const canvasHeight = size.y + bufferY * 2
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5)
+      canvas.width = Math.max(1, Math.round(canvasWidth * pixelRatio))
+      canvas.height = Math.max(1, Math.round(canvasHeight * pixelRatio))
+      canvas.style.width = `${canvasWidth}px`
+      canvas.style.height = `${canvasHeight}px`
+
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+      context.clearRect(0, 0, canvasWidth, canvasHeight)
+      const canvasOrigin = map.containerPointToLayerPoint([0, 0]).subtract([bufferX, bufferY])
+      L.DomUtil.setPosition(canvas, canvasOrigin)
+      const activeMetric = metricRef.current
+      const activeOpacity = opacityRef.current
+
+      currentGrid.cells.forEach((cell) => {
+        const style = getHeatStyle(getCellScore(cell, activeMetric, currentGrid.maxRecentUnits))
+        const centerPoint = map.latLngToLayerPoint(map.unproject(cell.center, currentGrid.zoom))
+        const centerX = centerPoint.x - canvasOrigin.x
+        const centerY = centerPoint.y - canvasOrigin.y
+        context.beginPath()
+        for (let index = 0; index < 6; index += 1) {
+          const angle = (Math.PI / 180) * (60 * index - 30)
+          const x = centerX + currentGrid.radius * Math.cos(angle)
+          const y = centerY + currentGrid.radius * Math.sin(angle)
+          if (index === 0) context.moveTo(x, y)
+          else context.lineTo(x, y)
+        }
+        context.closePath()
+        context.fillStyle = style.color
+        context.globalAlpha = style.fillOpacity * activeOpacity
+        context.fill()
+        context.strokeStyle = style.color
+        context.lineWidth = 1
+        context.globalAlpha = style.opacity * activeOpacity
+        context.stroke()
+        if (cell.pharmacyCount > 0) {
+          context.beginPath()
+          context.arc(centerX, centerY, PHARMACY_DOT_OUTLINE_RADIUS_PIXELS, 0, Math.PI * 2)
+          context.fillStyle = '#fff'
+          context.globalAlpha = 1
+          context.fill()
+          context.beginPath()
+          context.arc(centerX, centerY, PHARMACY_DOT_RADIUS_PIXELS, 0, Math.PI * 2)
+          context.fillStyle = '#0f172a'
+          context.fill()
+        }
+      })
+      context.globalAlpha = 1
+    }
+
+    const handleMapClick = (event) => {
+      const currentGrid = gridRef.current
+      const point = map.project(event.latlng, currentGrid.zoom)
+      const index = hexForPoint(point.x, point.y, currentGrid.radius)
+      const cell = currentGrid.cellsById.get(`${index.q}:${index.r}`)
+      if (!cell) return
+      const emptyCell = cell.pharmacyCount === 0
+        && cell.recentUnits === 0
+        && cell.inventoryRecordCount === 0
+        && cell.nearbySignalCount === 0
+        && cell.alerts.length === 0
+      L.popup({
+        maxWidth: emptyCell ? 220 : 310,
+        autoPanPaddingTopLeft: [18, 18],
+        autoPanPaddingBottomRight: [18, 18],
+        pane: 'popupPane',
+        className: `heatmap-popup${emptyCell ? ' heatmap-popup-empty' : ''}`,
+      })
+        .setLatLng(event.latlng)
+        .setContent(createMapPopup(cell))
+        .openOn(map)
+    }
+
+    map.on('click', handleMapClick)
+    drawRef.current = drawCanvas
+    drawCanvas()
+    return () => {
+      map.off('click', handleMapClick)
+      canvas.remove()
+      drawRef.current = null
+    }
+  }, [map])
+
+  return null
 }
 
 function FitMapToPharmacies({ pharmacies }) {
@@ -255,6 +541,46 @@ function FitMapToPharmacies({ pharmacies }) {
   return null
 }
 
+function MapStatusOverlay({ error, dashboard, loading, hasPendingChanges, lastUpdated }) {
+  const map = useMap()
+  const statusRef = useRef(null)
+  const [size, setSize] = useState(() => map.getSize())
+
+  useEffect(() => {
+    const alignWithViewport = () => {
+      if (!statusRef.current) return
+      const panePosition = L.DomUtil.getPosition(map.getPanes().mapPane)
+      L.DomUtil.setPosition(statusRef.current, panePosition.multiplyBy(-1))
+    }
+    const updateSize = () => setSize(map.getSize())
+
+    map.on('move', alignWithViewport)
+    map.on('moveend', alignWithViewport)
+    map.on('resize', updateSize)
+    alignWithViewport()
+    return () => {
+      map.off('move', alignWithViewport)
+      map.off('moveend', alignWithViewport)
+      map.off('resize', updateSize)
+    }
+  }, [map])
+
+  return (
+    <Pane
+      name="analysisStatusPane"
+      style={{ zIndex: 650, width: `${size.x}px`, height: `${size.y}px`, pointerEvents: 'none' }}
+    >
+      <div ref={statusRef} className={`map-refresh-status${error ? ' stale' : ''}`} aria-live="polite">
+        <span className={`refresh-indicator${loading ? ' loading' : ''}`} />
+        <span>
+          {error && dashboard ? 'Mostrando datos anteriores' : error ? 'Datos no disponibles' : loading ? 'Actualizando análisis' : hasPendingChanges ? 'Filtros pendientes de aplicar' : 'Análisis actualizado'}
+          {lastUpdated && ` · ${lastUpdated.toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit' })}`}
+        </span>
+      </div>
+    </Pane>
+  )
+}
+
 const CollapsibleCard = ({ title, icon: Icon, iconColor, children, className = '', defaultOpen = false, extraHeader }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   return (
@@ -277,77 +603,12 @@ const CollapsibleCard = ({ title, icon: Icon, iconColor, children, className = '
   );
 };
 
-function HexHeatmapLayer({ pharmacies, alerts }) {
-  const map = useMap()
-  const [, setViewportVersion] = useState(0)
-
-  useEffect(() => {
-    let frameId = 0
-    const refreshHexGrid = () => {
-      if (frameId) window.cancelAnimationFrame(frameId)
-      frameId = window.requestAnimationFrame(() => {
-        frameId = 0
-        setViewportVersion((version) => version + 1)
-      })
-    }
-
-    map.on('zoom', refreshHexGrid)
-    map.on('zoomend', refreshHexGrid)
-    map.on('moveend', refreshHexGrid)
-    map.on('resize', refreshHexGrid)
-    return () => {
-      if (frameId) window.cancelAnimationFrame(frameId)
-      map.off('zoom', refreshHexGrid)
-      map.off('zoomend', refreshHexGrid)
-      map.off('moveend', refreshHexGrid)
-      map.off('resize', refreshHexGrid)
-    }
-  }, [map])
-
-  const cells = buildHexCells(map, pharmacies, alerts)
-
-  return cells.map((cell) => (
-    <Polygon
-      key={cell.id}
-      positions={cell.positions}
-      pathOptions={{
-        className: 'heat-hex',
-        color: cell.style.color,
-        fillColor: cell.style.color,
-        fillOpacity: cell.style.fillOpacity,
-        opacity: cell.style.opacity,
-        weight: 1,
-      }}
-    >
-      <Popup>
-        <div className="map-popup">
-          <h3>Área de influencia</h3>
-          <p><strong>Intensidad:</strong> {formatNumber(cell.score * 100)}%</p>
-          <p><strong>Sectores en la celda:</strong> {cell.sectors.join(', ') || 'Sin farmacia'}</p>
-          <p><strong>Farmacias en la celda:</strong> {formatNumber(cell.pharmacyCount)}</p>
-          <p><strong>Farmacias con señal cercana:</strong> {formatNumber(cell.nearbySignalCount)}</p>
-          <p><strong>Unidades recientes en la celda:</strong> {formatNumber(cell.recentUnits)}</p>
-          {cell.alerts.length > 0 ? (
-            <>
-              <p><strong>Sectores con señal próximos:</strong> {cell.nearbySectors.join(', ')}</p>
-              <ul className="hex-alert-list">
-                {cell.alerts.slice(0, 5).map((alert) => (
-                  <li key={alert.id}>
-                    {alert.sector} · {alert.category}: +{formatNumber(alert.changePercent)}% ({statusDetails[alert.status]?.label || 'Alza observada'})
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : <p>No hay señales de alza cercanas.</p>}
-        </div>
-      </Popup>
-    </Polygon>
-  ))
-}
-
 function App() {
   const [dashboard, setDashboard] = useState(null)
-  const [selectedCategory, setSelectedCategory] = useState('')
+  const [draftCategory, setDraftCategory] = useState('')
+  const [draftMetric, setDraftMetric] = useState('signal')
+  const [analysisFilters, setAnalysisFilters] = useState({ category: '', metric: 'signal' })
+  const [heatOpacity, setHeatOpacity] = useState(0.82)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [reloadToken, setReloadToken] = useState(0)
@@ -360,7 +621,9 @@ function App() {
 
     const loadDashboard = async () => {
       setLoading(true)
-      const query = selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ''
+      const params = new URLSearchParams()
+      if (analysisFilters.category) params.set('category', analysisFilters.category)
+      const query = params.size ? `?${params.toString()}` : ''
       try {
         const response = await fetch(`${API}/dashboard${query}`)
         const payload = await response.json()
@@ -384,16 +647,7 @@ function App() {
 
     loadDashboard()
     return () => { active = false }
-  }, [selectedCategory, reloadToken])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        setReloadToken((value) => value + 1)
-      }
-    }, AUTO_REFRESH_MS)
-    return () => window.clearInterval(timer)
-  }, [])
+  }, [analysisFilters, reloadToken])
 
   useEffect(() => {
     if (!dashboard) return
@@ -416,12 +670,27 @@ function App() {
 
   const pharmacies = dashboard?.pharmacies || EMPTY_ARRAY
   const alerts = dashboard?.alerts || EMPTY_ARRAY
+  const sectorMetrics = dashboard?.sectorMetrics || EMPTY_ARRAY
+  const inventorySectors = dashboard?.inventorySectors || EMPTY_ARRAY
+  const inventoryAlerts = dashboard?.inventoryAlerts || EMPTY_ARRAY
+  const categories = dashboard?.categories || EMPTY_ARRAY
+  const metricDetails = METRIC_OPTIONS.find((option) => option.value === analysisFilters.metric) || METRIC_OPTIONS[0]
+  const hasPendingChanges = (
+    draftCategory !== analysisFilters.category
+    || draftMetric !== analysisFilters.metric
+  )
   const stats = dashboard?.stats || {
     totalPharmacies: 0,
     sectorsWithSignals: 0,
     highSignalCount: 0,
     alertCount: 0,
+    inventoryRecordCount: 0,
+    inventoryRiskCount: 0,
+    inventoryOutOfStockCount: 0,
+    inventoryCriticalCount: 0,
+    inventoryLowCount: 0,
   }
+  const hasInventoryData = inventorySectors.length > 0 || stats.inventoryRecordCount > 0
   const mapCenter = useMemo(() => {
     const first = pharmacies.find((pharmacy) => Number.isFinite(pharmacy.lat) && Number.isFinite(pharmacy.lng))
     return first ? [first.lat, first.lng] : DEFAULT_CENTER
@@ -451,6 +720,18 @@ function App() {
         </div>
         <div className="header-caption">
           <span><Bell size={16} /> Señales de ventas agregadas por sector</span>
+          <button
+            type="button"
+            className="header-refresh-button"
+            onClick={() => {
+              setAnalysisFilters({ category: draftCategory, metric: draftMetric })
+              setReloadToken((value) => value + 1)
+            }}
+            disabled={loading}
+          >
+            <RefreshCw size={16} />
+            {loading ? 'Actualizando…' : hasPendingChanges ? 'Aplicar y actualizar' : 'Actualizar análisis'}
+          </button>
           {dashboard?.dataStatus === 'synthetic' && <span className="data-badge">DATOS SINTÉTICOS</span>}
         </div>
       </header>
@@ -468,24 +749,49 @@ function App() {
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/attribution/">CARTO</a>'
               url={CARTO_TILES}
             />
+            <MapStatusOverlay
+              error={error}
+              dashboard={dashboard}
+              loading={loading}
+              hasPendingChanges={hasPendingChanges}
+              lastUpdated={lastUpdated}
+            />
             <FitMapToPharmacies pharmacies={pharmacies} />
-            <HexHeatmapLayer pharmacies={pharmacies} alerts={alerts} />
+            <HexHeatmapLayer
+              pharmacies={pharmacies}
+              alerts={alerts}
+              sectorMetrics={sectorMetrics}
+              metric={analysisFilters.metric}
+              heatOpacity={heatOpacity}
+            />
           </MapContainer>
-          <div className={`map-refresh-status${error ? ' stale' : ''}`} aria-live="polite">
-            <span className={`refresh-indicator${loading ? ' loading' : ''}`} />
-            <span>
-              {error && dashboard ? 'Mostrando datos anteriores' : error ? 'Datos no disponibles' : loading ? 'Actualizando mapa' : 'Mapa actualizado'}
-              {lastUpdated && ` · ${lastUpdated.toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit' })}`}
-            </span>
+          <div className="map-opacity-panel">
+            <label htmlFor="map-heat-opacity">
+              Opacidad del calor <strong>{formatNumber(heatOpacity * 100)}%</strong>
+            </label>
+            <input
+              id="map-heat-opacity"
+              className="heat-opacity-control"
+              type="range"
+              min="0.15"
+              max="1"
+              step="0.05"
+              value={heatOpacity}
+              onChange={(event) => setHeatOpacity(Number(event.target.value))}
+              aria-label="Opacidad del mapa de calor"
+            />
+            <div className="range-end-labels"><span>Más mapa base</span><span>Más calor</span></div>
           </div>
-          <div className="hex-legend" role="region" tabIndex={0} aria-label="Leyenda de intensidad de señales">
-            <strong>Intensidad</strong>
+          <div className="hex-legend" role="region" tabIndex={0} aria-label={`Leyenda: ${metricDetails.label}`}>
+            <strong>{metricDetails.label}</strong>
             <i className="heat-gradient" aria-hidden="true" />
             <div className="hex-legend-details">
-              <span><i className="legend-swatch no-signal" />Sin señal cercana</span>
-              <div className="heat-scale-labels"><span>Menor</span><span>Mayor</span></div>
-              <small>El color se atenúa con la distancia</small>
-              <small>Se actualiza cada 30 s</small>
+              <span><i className="legend-swatch no-signal" />Sin dato o valor mínimo</span>
+              <div className="heat-scale-labels"><span>{metricDetails.low}</span><span>{metricDetails.high}</span></div>
+              <span><i className="legend-pharmacy-dot" />Farmacia en el centro del hexágono</span>
+              <small>{metricDetails.note}</small>
+              <small>El mapa base permanece visible bajo los hexágonos.</small>
+              <small>Los datos cambian al pulsar “Actualizar análisis”.</small>
             </div>
           </div>
           {!loading && !error && pharmacies.length === 0 && (
@@ -504,45 +810,10 @@ function App() {
             </div>
           )}
 
-          <CollapsibleCard title="Filtros" className="product-card">
-            <label className="product-filter" htmlFor="category-select">Categoría de producto</label>
-            <select
-              id="category-select"
-              value={selectedCategory}
-              onChange={(event) => setSelectedCategory(event.target.value)}
-              disabled={loading || !dashboard?.categories?.length}
-            >
-              <option value="">Todas las categorías</option>
-              {dashboard?.categories?.map((category) => (
-                <option key={category} value={category}>{category}</option>
-              ))}
-            </select>
-          </CollapsibleCard>
-
-          <CollapsibleCard title="Señales del periodo" icon={Zap} iconColor="var(--status-yellow)">
-            <div className="stats-grid">
-              <div className="stat-box">
-                <span className="stat-label">Farmacias</span>
-                <span className="stat-value">{formatNumber(stats.totalPharmacies)}</span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-label">Sectores con alza</span>
-                <span className="stat-value" style={{ color: 'var(--status-red)' }}>{formatNumber(stats.sectorsWithSignals)}</span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-label">Alertas categoría</span>
-                <span className="stat-value" style={{ color: 'var(--status-yellow)' }}>{formatNumber(stats.alertCount)}</span>
-              </div>
-            </div>
-            <span className="location-count">
-              {formatNumber(dashboard?.stats?.recentUnits || 0)} unidades registradas en el periodo reciente
-            </span>
-          </CollapsibleCard>
-
-          <CollapsibleCard 
-            title="Aumentos por sector" 
-            icon={AlertTriangle} 
-            iconColor="var(--status-red)" 
+          <CollapsibleCard
+            title="Aumentos por sector"
+            icon={AlertTriangle}
+            iconColor="var(--status-red)"
             className="alert-card"
             extraHeader={<span className="alert-count" style={{ fontSize: '0.8rem', background: '#f1f5f9', padding: '2px 8px', borderRadius: '12px' }}>{alerts.length} señales</span>}
           >
@@ -586,33 +857,120 @@ function App() {
             </div>
           </CollapsibleCard>
 
-          <CollapsibleCard title="Predicción Epidemiológica" icon={Activity} iconColor="var(--status-red)" defaultOpen={false}>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-main)' }}>
-              <strong>Basado en patrones de compra:</strong>
-              <ul style={{ paddingLeft: '1rem', marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <li>
-                  <strong>Zona Norte:</strong> Aumento de Antihistamínicos.
-                  <div style={{ color: 'var(--status-yellow)' }}>Posible brote de alergias estacionales.</div>
-                </li>
-                <li>
-                  <strong>Sector Centro:</strong> Alta demanda de Analgésicos/Antipiréticos.
-                  <div style={{ color: 'var(--status-red)' }}>Posible foco de infecciones virales (ej. Dengue o Gripe).</div>
-                </li>
-              </ul>
-            </div>
-            <div style={{ fontSize: '0.75rem', background: '#fef2f2', border: '1px solid #fecaca', padding: '0.5rem', borderRadius: '4px', color: '#991b1b', marginTop: '0.5rem' }}>
-              <strong>Atención:</strong> Esta es una proyección teórica (MOCK para demo) basada en ventas y no constituye un diagnóstico epidemiológico real.
+          <CollapsibleCard title="Filtros" className="product-card">
+            <label className="product-filter" htmlFor="category-select">Categoría de producto</label>
+            <select
+              id="category-select"
+              value={draftCategory}
+              onChange={(event) => setDraftCategory(event.target.value)}
+              disabled={loading || !categories.length}
+            >
+              <option value="">Todas las categorías</option>
+              {categories.map((category) => (
+                <option key={category} value={category}>{category}</option>
+              ))}
+            </select>
+
+            <label className="product-filter" htmlFor="metric-select">El color representa</label>
+            <select
+              id="metric-select"
+              value={draftMetric}
+              onChange={(event) => setDraftMetric(event.target.value)}
+              disabled={loading}
+            >
+              {METRIC_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+
+            {hasPendingChanges && <span className="pending-analysis">La categoría y la métrica se aplican al actualizar. La opacidad cambia al instante.</span>}
+          </CollapsibleCard>
+
+          <CollapsibleCard
+            title="Inventario por sector"
+            icon={PackageCheck}
+            iconColor="var(--status-red)"
+            extraHeader={(
+              <span className="alert-count">
+                {hasInventoryData
+                  ? `${formatNumber(inventorySectors.length)} sectores · ${formatNumber(stats.inventoryRiskCount)} en riesgo`
+                  : 'Sin datos'}
+              </span>
+            )}
+          >
+            {hasInventoryData ? (
+              <>
+                <p className="inventory-method">
+                  El porcentaje es la proporción de registros en estado agotado, crítico o bajo sobre el total de productos registrados en ese sector. Para verlo en el mapa, elige «Riesgo de inventario» en Filtros y pulsa «Aplicar filtros y actualizar». Mide existencias, no ventas ni enfermedades.
+                </p>
+                <div className="stats-grid inventory-stats-grid">
+                  <div className="stat-box">
+                    <span className="stat-label">Agotados</span>
+                    <span className="stat-value inventory-out-value">{formatNumber(stats.inventoryOutOfStockCount)}</span>
+                  </div>
+                  <div className="stat-box">
+                    <span className="stat-label">Críticos</span>
+                    <span className="stat-value inventory-critical-value">{formatNumber(stats.inventoryCriticalCount)}</span>
+                  </div>
+                  <div className="stat-box">
+                    <span className="stat-label">Bajos</span>
+                    <span className="stat-value inventory-low-value">{formatNumber(stats.inventoryLowCount)}</span>
+                  </div>
+                </div>
+                <div className="inventory-sector-list">
+                  {inventorySectors.slice(0, 5).map((sector) => (
+                    <div className="inventory-sector-row" key={sector.sectorId}>
+                      <span>{sector.sectorId}</span>
+                      <strong>{formatNumber(sector.riskPercent, 1)}%</strong>
+                      <small>{formatNumber(sector.riskCount)} de {formatNumber(sector.recordCount)} registros en riesgo · {formatNumber(sector.averageCoverageDays, 1)} días promedio</small>
+                    </div>
+                  ))}
+                </div>
+                <div className="inventory-alert-list">
+                  <strong>Alertas prioritarias</strong>
+                  {inventoryAlerts.length === 0 ? (
+                    <span className="empty-alert">No hay registros de inventario en riesgo con estos filtros.</span>
+                  ) : inventoryAlerts.slice(0, 8).map((item) => (
+                    <article className={`inventory-alert-item stock-${item.status.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')}`} key={item.id || `${item.pharmacyId}-${item.productId}`}>
+                      <span className="inventory-alert-sector">{item.sectorId} · {item.pharmacyName}</span>
+                      <strong>{item.productName} · {item.status}</strong>
+                      <small>{formatNumber(item.stockActual)} / {formatNumber(item.stockMinimum)} uds. · {formatNumber(item.daysCoverage, 1)} días de cobertura</small>
+                    </article>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="inventory-empty-state">
+                <strong>El inventario no llegó al tablero</strong>
+                <span>No se recibieron registros de inventario para los filtros actuales.</span>
+                <span>Reinicia <code>python backend/local_server.py</code> desde la raíz del proyecto y pulsa «Actualizar análisis».</span>
+              </div>
+            )}
+          </CollapsibleCard>
+
+          <CollapsibleCard title="Señal epidemiológica orientativa" icon={Activity} iconColor="var(--status-red)">
+            <p className="epidemiological-summary">
+              Variación de ventas por sector y categoría para priorizar una revisión. Estos datos no identifican una enfermedad.
+            </p>
+            {alerts.length === 0 ? (
+              <div className="empty-alert">No se detectaron aumentos con el filtro aplicado.</div>
+            ) : (
+              <div className="epidemiological-list">
+                {alerts.slice(0, 5).map((alert) => (
+                  <article className={`epidemiological-item ${alert.status === 'red' ? 'high' : 'watch'}`} key={alert.id}>
+                    <div><strong>{alert.sector}</strong><span>{alert.category}</span></div>
+                    <strong>+{formatNumber(alert.changePercent, 1)}%</strong>
+                    <small>{formatNumber(alert.recentUnits)} uds. en 30 días frente a {formatNumber(alert.baselineUnits)} en 90 días</small>
+                    <small className="epidemiological-possibility">Posible afección: no determinada con los datos disponibles.</small>
+                  </article>
+                ))}
+              </div>
+            )}
+            <div className="prediction-disclaimer">
+              La variación de ventas por sí sola no identifica una enfermedad ni confirma un brote. Para valorar afecciones se requieren datos epidemiológicos autorizados y una asociación validada por especialistas.
             </div>
           </CollapsibleCard>
 
-          <button
-            className={`action-button ${loading ? 'disabled' : ''}`}
-            onClick={() => setReloadToken((value) => value + 1)}
-            disabled={loading}
-          >
-            <RefreshCw size={20} />
-            {loading ? 'Actualizando…' : 'Actualizar análisis'}
-          </button>
           <span className="signal-disclaimer">
             Un aumento de ventas es una señal comercial; no diagnostica ni confirma enfermedades.
           </span>
